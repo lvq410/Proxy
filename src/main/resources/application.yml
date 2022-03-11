@@ -1,0 +1,33 @@
+management:
+  server.port: 81
+  endpoints:
+    enabled-by-default: true
+    web.exposure.include: "*"
+  endpoint.health.show-details: never
+  health:
+    defaults.enabled: false
+    db.enabled: false
+  info.git.mode: full
+
+server.port: ${management.server.port}
+
+spring:
+  main:
+    banner-mode: "OFF"
+  application.name: socket-proxy
+  boot.admin.client:
+    enabled: false
+    url: http://localhost:25020
+    instance.prefer-ip: true
+    auto-deregistration: true
+
+logging:
+  file: logs/socket-proxy.log
+  file.max-history: 30
+  level:
+    root: info
+    com.lvt4j.socketproxy: trace
+
+maxIdleTime: 60000
+proxy:
+  80: null

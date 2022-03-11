@@ -1,0 +1,97 @@
+buildscript {
+    repositories {
+        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+    }
+    dependencies {
+        classpath('org.springframework.boot:spring-boot-gradle-plugin:2.1.3.RELEASE')
+        classpath('gradle.plugin.com.gorylenko.gradle-git-properties:gradle-git-properties:2.2.2')
+    }
+}
+
+apply plugin: 'java'
+apply plugin: 'java-library'
+apply plugin: 'eclipse'
+apply plugin: 'idea'
+apply plugin: 'org.springframework.boot'
+apply plugin: 'io.spring.dependency-management'
+apply plugin: 'com.gorylenko.gradle-git-properties'
+
+group = 'com.lvt4j.rbac'
+
+repositories {
+    maven { url 'http://maven.aliyun.com/nexus/content/groups/public/' }
+}
+
+configurations.all {
+    resolutionStrategy.cacheDynamicVersionsFor 1, 'seconds'
+}
+
+dependencyManagement {
+    imports {
+        mavenBom org.springframework.boot.gradle.plugin.SpringBootPlugin.BOM_COORDINATES
+    }
+}
+
+jar {
+    enabled=true
+}
+
+gitProperties {
+    extProperty = 'gitProps'
+    dateFormat = 'yyyy-MM-dd HH:mm:ss'
+}
+
+springBoot {
+    buildInfo{
+        dependsOn(generateGitProperties);
+        def tmpVer = version
+        doFirst{
+            tmpVer = version
+            version = project.ext.gitProps['git.commit.id.abbrev']+' '+project.ext.gitProps['git.commit.time']+' '+project.ext.gitProps['git.commit.message.short']
+        }
+        properties{
+            additional = [
+                time : new java.text.SimpleDateFormat('yyyy-MM-dd HH:mm:ss').format(new Date())
+            ]
+        }
+        doLast{
+            version = tmpVer
+        }
+    }
+}
+
+tasks.withType(JavaCompile){
+    options.encoding = 'UTF-8'
+}
+
+task sourcesJar(type: Jar) {
+    archiveClassifier = 'sources'
+    from sourceSets.main.allJava
+}
+
+task javadocJar(type: Jar) {
+    archiveClassifier = 'javadoc'
+    from javadoc.destinationDir
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.12'
+    testAnnotationProcessor 'org.projectlombok:lombok:1.18.6'
+    testCompileOnly 'org.projectlombok:lombok:1.18.6'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+        
+    annotationProcessor 'org.projectlombok:lombok:1.18.6'
+    compileOnly 'org.projectlombok:lombok:1.18.6'
+
+    api 'com.google.guava:guava:16.0.1'
+    api 'org.apache.commons:commons-lang3:3.4'
+    api 'commons-configuration:commons-configuration:1.10'
+    api 'commons-io:commons-io:2.5'
+    api 'org.apache.commons:commons-collections4:4.3'
+    
+    api 'org.springframework.boot:spring-boot-starter-web'
+    api 'org.springframework.boot:spring-boot-starter-actuator'
+    api 'org.springframework.cloud:spring-cloud-context:2.1.1.RELEASE'
+    api 'de.codecentric:spring-boot-admin-starter-client:2.1.6'
+    api 'io.micrometer:micrometer-registry-prometheus'
+}
