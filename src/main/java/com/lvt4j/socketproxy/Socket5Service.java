@@ -162,16 +162,16 @@ public class Socket5Service implements InfoContributor {
         }
         
     }
-    class Connect implements Closeable {
+    class Connect extends Thread implements Closeable {
         private final int serverPort;
         private final Socket src;
-        private final InputStream srcIn;
-        private final OutputStream srcOut;
+        private InputStream srcIn;
+        private OutputStream srcOut;
         
-        private final Socket target;
-        private final String targetStr;
+        private Socket target;
+        private String targetStr = "uninitialized";
         
-        private final String direction;
+        private String direction;
         
         private TransferThread src2Target;
         private TransferThread target2Src;
@@ -181,7 +181,12 @@ public class Socket5Service implements InfoContributor {
         public Connect(int serverPort, Socket src) throws IOException {
             this.serverPort = serverPort;
             this.src = src;
-            
+            direction = String.format("%s->%s->%s->%s", format(src.getRemoteSocketAddress()), format(src.getLocalSocketAddress()), "unknown", "unknown");
+            setName(String.format("%s connect from %s", serverPort, format(src.getRemoteSocketAddress())));
+            start();
+        }
+        @Override @SneakyThrows
+        public void run() {
             this.srcIn = src.getInputStream();
             this.srcOut = src.getOutputStream();
             
@@ -299,6 +304,11 @@ public class Socket5Service implements InfoContributor {
                 if(target!=null && !target.isClosed()) target.close();
             }catch(Exception e){
                 log.warn("{} connection {} close err", serverPort, direction, e);
+            }
+            try{
+                if(this.isAlive()) this.join(1000);
+            }catch(Exception e){
+                log.warn("{} connection {} wait connect thread destory timeout", serverPort, direction, e);
             }
             try{
                 if(src2Target!=null && src2Target.isAlive()) src2Target.join(1000);
