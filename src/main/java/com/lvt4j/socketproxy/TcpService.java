@@ -1,9 +1,11 @@
 package com.lvt4j.socketproxy;
 
+import static com.lvt4j.socketproxy.SocketProxyApp.format;
 import static java.util.stream.Collectors.groupingBy;
 import static java.util.stream.Collectors.mapping;
 import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
+import static java.util.stream.Collectors.toSet;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -11,7 +13,6 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.net.SocketAddress;
 import java.net.SocketException;
 import java.util.Collections;
 import java.util.HashMap;
@@ -20,7 +21,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
@@ -38,12 +38,12 @@ import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- *
+ * 纯Tcp转发代理
  * @author LV on 2022年3月11日
  */
 @Slf4j
 @Service
-public class ProxyService implements InfoContributor {
+public class TcpService implements InfoContributor {
 
     @Autowired
     private Config config;
@@ -51,8 +51,8 @@ public class ProxyService implements InfoContributor {
     private Map<Integer, ServerThread> instances = new HashMap<>();
     
     @PostConstruct
-    private void init() throws Throwable {
-        Config.changeCallback = ()->{
+    private synchronized void init() throws Throwable {
+        Config.changeCallback_tcp = ()->{
             try{
                 this.init();
             }catch(Throwable e){
@@ -60,7 +60,7 @@ public class ProxyService implements InfoContributor {
             }
         };
         
-        for(Entry<Integer, String> entry : config.getProxy().entrySet()){
+        for(Entry<Integer, String> entry : config.getTcps().entrySet()){
             int port = entry.getKey();
             String target = entry.getValue();
             
@@ -72,7 +72,7 @@ public class ProxyService implements InfoContributor {
                 s.setTarget(target);
             }
         }
-        Set<Integer> removeds = instances.keySet().stream().filter(k->!config.getProxy().containsKey(k)).collect(Collectors.toSet());
+        Set<Integer> removeds = instances.keySet().stream().filter(k->!config.getTcps().containsKey(k)).collect(toSet());
         for(Integer removed : removeds){
             ServerThread s = instances.remove(removed);
             if(s!=null) s.destory();
@@ -81,7 +81,7 @@ public class ProxyService implements InfoContributor {
     
     @PreDestroy
     private synchronized void destory() {
-        Config.changeCallback = null;
+        Config.changeCallback_tcp = null;
         instances.values().forEach(ServerThread::destory);
     }
     
@@ -92,7 +92,7 @@ public class ProxyService implements InfoContributor {
     
     @Override
     public void contribute(Builder builder) {
-        builder.withDetail("connects", instances.values().stream().collect(toMap(s->s.port, s->s.info())));
+        builder.withDetail("tcps", instances.values().stream().collect(toMap(s->s.port, s->s.info())));
     }
     
     class ServerThread extends Thread {
@@ -208,9 +208,6 @@ public class ProxyService implements InfoContributor {
             target2Src.start();
             
             log.info("{} connected {}", serverPort, direction);
-        }
-        private String format(SocketAddress addr) {
-            return StringUtils.strip(addr.toString(), "/");
         }
         
         @AllArgsConstructor

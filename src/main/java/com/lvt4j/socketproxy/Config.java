@@ -1,8 +1,10 @@
 package com.lvt4j.socketproxy;
 
+import static java.util.Collections.emptySet;
 import static java.util.stream.Collectors.toMap;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.Map.Entry;
 
 import javax.annotation.PreDestroy;
@@ -25,16 +27,20 @@ import lombok.Setter;
 @ConfigurationProperties
 public class Config {
 
-    public static Runnable changeCallback;
+    public static Runnable changeCallback_tcp;
+    public static Runnable changeCallback_socket5;
     
     @Setter@Getter
     private long maxIdleTime;
     
     @Getter
-    private Map<Integer, String> proxy;
+    private Map<Integer, String> tcps;
     
-    public void setProxy(Map<Integer, String> proxy) {
-        this.proxy = proxy.entrySet().stream()
+    @Getter@Setter
+    private Set<Integer> socket5s = emptySet();
+    
+    public void setTcps(Map<Integer, String> proxy) {
+        this.tcps = proxy.entrySet().stream()
             .filter(e->isValidTarget(e.getValue())).collect(toMap(Entry::getKey, Entry::getValue));
     }
     
@@ -53,7 +59,8 @@ public class Config {
             try{
                 Thread.sleep(1000);
             }catch(Exception ig){}
-            if(changeCallback!=null) changeCallback.run();
+            if(changeCallback_tcp!=null) changeCallback_tcp.run();
+            if(changeCallback_socket5!=null) changeCallback_socket5.run();
         }).start();
     }
     

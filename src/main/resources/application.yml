@@ -29,5 +29,8 @@ logging:
     com.lvt4j.socketproxy: trace
 
 maxIdleTime: 60000
-proxy:
+tcps:
   80: null
+
+socket5s:
+  - 8085
