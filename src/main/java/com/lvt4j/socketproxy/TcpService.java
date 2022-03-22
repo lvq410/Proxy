@@ -51,14 +51,8 @@ public class TcpService implements InfoContributor {
     private Map<Integer, ServerThread> instances = new HashMap<>();
     
     @PostConstruct
-    private synchronized void init() throws Throwable {
-        Config.changeCallback_tcp = ()->{
-            try{
-                this.init();
-            }catch(Throwable e){
-                log.error("reinitialize all proxy err", e);
-            }
-        };
+    private synchronized void init() {
+        Config.changeCallback_tcp = this::init;
         
         for(Entry<Integer, String> entry : config.getTcps().entrySet()){
             int port = entry.getKey();
@@ -66,8 +60,12 @@ public class TcpService implements InfoContributor {
             
             ServerThread s = instances.get(port);
             if(s==null){
-                s = new ServerThread(port, target);
-                instances.put(port, s);
+                try{
+                    s = new ServerThread(port, target);
+                    instances.put(port, s);
+                }catch(Exception e){
+                    log.error("启动服务线程[{}]失败", port, e);
+                }
             }else{
                 s.setTarget(target);
             }
@@ -108,7 +106,11 @@ public class TcpService implements InfoContributor {
         public ServerThread(int port, String target) throws IOException {
             this.port = port;
             this.target = target;
-            server = new ServerSocket(port);
+            try{
+                server = new ServerSocket(port);
+            }catch(IOException e){
+                throw new IOException(String.format("启动服务端口[%s]失败", port), e);
+            }
             log.info("{} ServerSocket start, target {}", port, target);
             setName(port+" server");
             start();
@@ -195,7 +197,11 @@ public class TcpService implements InfoContributor {
             this.src = src;
             this.targetConfig = targetConfig;
             String[] splits = targetConfig.split("[:]", 2);
-            this.target = new Socket(splits[0], Integer.valueOf(splits[1]));
+            try{
+                this.target = new Socket(splits[0], Integer.valueOf(splits[1]));
+            }catch(IOException e){
+                throw new IOException(String.format("连接目标失败[%s]", targetConfig), e);
+            }
             
             direction = String.format("%s->%s->%s->%s", format(src.getRemoteSocketAddress()), format(src.getLocalSocketAddress())
                 ,target.getLocalPort(), format(target.getRemoteSocketAddress()));

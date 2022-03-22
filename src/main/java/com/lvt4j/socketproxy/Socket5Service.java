@@ -51,17 +51,15 @@ public class Socket5Service implements InfoContributor {
     private Map<Integer, ServerThread> instances = new HashMap<>();
     
     @PostConstruct
-    private synchronized void init() throws IOException {
-        Config.changeCallback_socket5 = ()->{
-            try{
-                this.init();
-            }catch(Exception e){
-                log.error("reinitialize all proxy err", e);
-            }
-        };
+    private synchronized void init() {
+        Config.changeCallback_socket5 = this::init;
         for(Integer port : config.getSocket5s()){
             if(instances.containsKey(port)) continue;
-            instances.put(port, new ServerThread(port));
+            try{
+                instances.put(port, new ServerThread(port));
+            }catch(Exception e){
+                log.error("启动服务线程[{}]失败", port, e);
+            }
         }
         Set<Integer> removeds = instances.keySet().stream().filter(k->!config.getSocket5s().contains(k)).collect(toSet());
         for(Integer removed : removeds){
@@ -95,7 +93,11 @@ public class Socket5Service implements InfoContributor {
         
         public ServerThread(int port) throws IOException {
             this.port = port;
-            server = new ServerSocket(port);
+            try{
+                server = new ServerSocket(port);
+            }catch(IOException e){
+                throw new IOException(String.format("启动服务端口[%s]失败", port), e);
+            }
             log.info("{} ServerSocket start", port);
             setName(port+" server");
             start();
@@ -186,10 +188,13 @@ public class Socket5Service implements InfoContributor {
             acceptAuth();
             String targetDomain = targetDomain();
             short targetPort = targetPort();
-            this.target = new Socket(targetDomain, targetPort);
+            targetStr = targetDomain+":"+targetPort;
+            try{
+                this.target = new Socket(targetDomain, targetPort);
+            }catch(IOException e){
+                throw new IOException(String.format("连接目标失败[%s]", targetStr), e);
+            }
             responseStatus();
-            
-            targetStr = format(target.getRemoteSocketAddress());
             
             direction = String.format("%s->%s->%s->%s", format(src.getRemoteSocketAddress()), format(src.getLocalSocketAddress())
                 ,target.getLocalPort(), format(target.getRemoteSocketAddress()));
