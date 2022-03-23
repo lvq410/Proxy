@@ -29,21 +29,23 @@ public class Config {
 
     public static Runnable changeCallback_tcp;
     public static Runnable changeCallback_socket5;
+    public static Runnable changeCallback_http;
     
     @Setter@Getter
     private long maxIdleTime;
     
     @Getter
-    private Map<Integer, String> tcps;
+    private Map<Integer, String> tcp;
     
     @Getter@Setter
-    private Set<Integer> socket5s = emptySet();
+    private Set<Integer> socket5 = emptySet();
+    @Getter@Setter
+    private Set<Integer> http = emptySet();
     
-    public void setTcps(Map<Integer, String> proxy) {
-        this.tcps = proxy.entrySet().stream()
+    public void setTcp(Map<Integer, String> proxy) {
+        this.tcp = proxy.entrySet().stream()
             .filter(e->isValidTarget(e.getValue())).collect(toMap(Entry::getKey, Entry::getValue));
     }
-    
     private boolean isValidTarget(String target) {
         if(StringUtils.isBlank(target)) return false;
         String[] splits = target.split("[:]",2);
@@ -61,6 +63,7 @@ public class Config {
             }catch(Exception ig){}
             if(changeCallback_tcp!=null) changeCallback_tcp.run();
             if(changeCallback_socket5!=null) changeCallback_socket5.run();
+            if(changeCallback_http!=null) changeCallback_http.run();
         }).start();
     }
     

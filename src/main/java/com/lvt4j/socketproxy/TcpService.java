@@ -9,8 +9,6 @@ import static java.util.stream.Collectors.toSet;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
@@ -19,12 +17,14 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Map.Entry;
 import java.util.Set;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
 
+import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.info.Info.Builder;
@@ -32,9 +32,7 @@ import org.springframework.boot.actuate.info.InfoContributor;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import lombok.AllArgsConstructor;
 import lombok.Setter;
-import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -54,7 +52,7 @@ public class TcpService implements InfoContributor {
     private synchronized void init() {
         Config.changeCallback_tcp = this::init;
         
-        for(Entry<Integer, String> entry : config.getTcps().entrySet()){
+        for(Entry<Integer, String> entry : config.getTcp().entrySet()){
             int port = entry.getKey();
             String target = entry.getValue();
             
@@ -70,7 +68,7 @@ public class TcpService implements InfoContributor {
                 s.setTarget(target);
             }
         }
-        Set<Integer> removeds = instances.keySet().stream().filter(k->!config.getTcps().containsKey(k)).collect(toSet());
+        Set<Integer> removeds = instances.keySet().stream().filter(k->!config.getTcp().containsKey(k)).collect(toSet());
         for(Integer removed : removeds){
             ServerThread s = instances.remove(removed);
             if(s!=null) s.destory();
@@ -90,10 +88,10 @@ public class TcpService implements InfoContributor {
     
     @Override
     public void contribute(Builder builder) {
-        builder.withDetail("tcps", instances.values().stream().collect(toMap(s->s.port, s->s.info())));
+        builder.withDetail("tcp", instances.values().stream().collect(toMap(s->s.port, s->s.info())));
     }
     
-    class ServerThread extends Thread {
+    private class ServerThread extends Thread {
         
         private final int port;
         @Setter
@@ -111,7 +109,7 @@ public class TcpService implements InfoContributor {
             }catch(IOException e){
                 throw new IOException(String.format("启动服务端口[%s]失败", port), e);
             }
-            log.info("{} ServerSocket start, target {}", port, target);
+            log.info("{} tcp proxy start, target {}", port, target);
             setName(port+" server");
             start();
         }
@@ -161,7 +159,7 @@ public class TcpService implements InfoContributor {
             synchronized (connects) {
                 List<Connect> cleaned = new LinkedList<>();
                 for(Connect connect : connects){
-                    if(System.currentTimeMillis()-connect.latestTouchTime<config.getMaxIdleTime()) continue;
+                    if(System.currentTimeMillis()-connect.latestTouchTime()<config.getMaxIdleTime()) continue;
                     connect.destory();
                     cleaned.add(connect);
                 }
@@ -178,7 +176,7 @@ public class TcpService implements InfoContributor {
             return String.format("%s %s cnns: %s", port, target, connects.size());
         }
     }
-    class Connect implements Closeable {
+    private class Connect implements Closeable {
         
         private final int serverPort;
         private final Socket src;
@@ -187,10 +185,10 @@ public class TcpService implements InfoContributor {
         
         private final String direction;
         
-        private TransferThread src2Target;
-        private TransferThread target2Src;
+        private IOTransmitterThread src2Target;
+        private IOTransmitterThread target2Src;
         
-        private long latestTouchTime = System.currentTimeMillis();
+        private final long createTime = System.currentTimeMillis();
         
         public Connect(int serverPort, Socket src, String targetConfig) throws IOException {
             this.serverPort = serverPort;
@@ -206,35 +204,18 @@ public class TcpService implements InfoContributor {
             direction = String.format("%s->%s->%s->%s", format(src.getRemoteSocketAddress()), format(src.getLocalSocketAddress())
                 ,target.getLocalPort(), format(target.getRemoteSocketAddress()));
             
-            src2Target = new TransferThread(src.getInputStream(), target.getOutputStream());
-            src2Target.setName(serverPort+" "+targetConfig+" s->t"); src2Target.setDaemon(true);
-            src2Target.start();
-            target2Src = new TransferThread(target.getInputStream(), src.getOutputStream());
-            target2Src.setName(serverPort+" "+targetConfig+" t->s"); target2Src.setDaemon(true);
-            target2Src.start();
+            src2Target = new IOTransmitterThread(serverPort+"->"+targetConfig, log, src.getInputStream(), target.getOutputStream());
+            target2Src = new IOTransmitterThread(serverPort+"<-"+targetConfig, log, target.getInputStream(), src.getOutputStream());
             
             log.info("{} connected {}", serverPort, direction);
         }
         
-        @AllArgsConstructor
-        class TransferThread extends Thread {
-            private InputStream is;
-            private OutputStream os;
-            
-            @Override @SneakyThrows
-            public void run() {
-                int n = 0; byte[] buffer = new byte[1024];
-                try{
-                    while (-1 != (n = is.read(buffer))) {
-                        os.write(buffer, 0, n);
-                        latestTouchTime = System.currentTimeMillis();
-                    }
-                }catch(SocketException e){
-                    if(e.getMessage().contains("Socket closed")) return;
-                    log.error("{} connection {} trans data err", serverPort, direction ,e);
-                }
-            }
+        private long latestTouchTime() {
+            return ObjectUtils.max(createTime,
+                Optional.ofNullable(src2Target).map(t->t.latestTouchTime).orElse(null),
+                Optional.ofNullable(target2Src).map(t->t.latestTouchTime).orElse(null));
         }
+        
         @Override
         public synchronized void close() throws IOException {
             destory();

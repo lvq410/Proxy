@@ -7,6 +7,7 @@ import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
 import static java.util.stream.Collectors.toSet;
 
+import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
@@ -14,6 +15,7 @@ import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
+import java.net.URL;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedList;
@@ -27,24 +29,25 @@ import javax.annotation.PreDestroy;
 
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.Validate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.info.Info.Builder;
 import org.springframework.boot.actuate.info.InfoContributor;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import com.google.common.primitives.Shorts;
-
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * socket5协议代理
+ * http协议代理
  * @author LV on 2022年3月22日
+ * @see <a href="https://imququ.com/post/web-proxy.html">参考1</a>
+ * @see <a href="https://github.com/stefano-lupo/Java-Proxy-Server/blob/master/src/RequestHandler.java">参考2</a>
  */
 @Slf4j
 @Service
-public class Socket5Service implements InfoContributor {
+public class HttpService implements InfoContributor {
 
     @Autowired
     private Config config;
@@ -53,8 +56,8 @@ public class Socket5Service implements InfoContributor {
     
     @PostConstruct
     private synchronized void init() {
-        Config.changeCallback_socket5 = this::init;
-        for(Integer port : config.getSocket5()){
+        Config.changeCallback_http = this::init;
+        for(Integer port : config.getHttp()){
             if(instances.containsKey(port)) continue;
             try{
                 instances.put(port, new ServerThread(port));
@@ -62,7 +65,7 @@ public class Socket5Service implements InfoContributor {
                 log.error("启动服务线程[{}]失败", port, e);
             }
         }
-        Set<Integer> removeds = instances.keySet().stream().filter(k->!config.getSocket5().contains(k)).collect(toSet());
+        Set<Integer> removeds = instances.keySet().stream().filter(k->!config.getHttp().contains(k)).collect(toSet());
         for(Integer removed : removeds){
             ServerThread s = instances.remove(removed);
             if(s!=null) s.destory();
@@ -71,7 +74,7 @@ public class Socket5Service implements InfoContributor {
     
     @PreDestroy
     private synchronized void destory() {
-        Config.changeCallback_socket5 = null;
+        Config.changeCallback_http = null;
         instances.values().forEach(ServerThread::destory);
     }
     
@@ -82,12 +85,12 @@ public class Socket5Service implements InfoContributor {
     
     @Override
     public void contribute(Builder builder) {
-        builder.withDetail("socket5", instances.values().stream().collect(toMap(s->s.port, s->s.info())));
+        builder.withDetail("http", instances.values().stream().collect(toMap(s->s.port, s->s.info())));
     }
     
     private class ServerThread extends Thread {
-        private final int port;
         
+        private final int port;
         private final ServerSocket server;
 
         private List<Connect> connects = Collections.synchronizedList(new LinkedList<>());
@@ -99,7 +102,7 @@ public class Socket5Service implements InfoContributor {
             }catch(IOException e){
                 throw new IOException(String.format("启动服务端口[%s]失败", port), e);
             }
-            log.info("{} socket5 proxy start", port);
+            log.info("{} http proxy start", port);
             setName(port+" server");
             start();
         }
@@ -161,7 +164,6 @@ public class Socket5Service implements InfoContributor {
         public String toString() {
             return String.format("%s cnns: %s", port, connects.size());
         }
-        
     }
     private class Connect extends Thread implements Closeable {
         private final int serverPort;
@@ -191,16 +193,14 @@ public class Socket5Service implements InfoContributor {
             this.srcIn = src.getInputStream();
             this.srcOut = src.getOutputStream();
             
-            acceptAuth();
-            String targetDomain = targetDomain();
-            short targetPort = targetPort();
-            targetStr = targetDomain+":"+targetPort;
-            try{
-                this.target = new Socket(targetDomain, targetPort);
-            }catch(IOException e){
-                throw new IOException(String.format("连接目标失败[%s]", targetStr), e);
+            String statusLine = readline(srcIn);
+            String[] split = statusLine.split(" ",3);
+            Validate.isTrue(split.length==3, "非法的http请求状态行：%s", statusLine);
+            if("CONNECT".equals(split[0])){
+                initHttps(split);
+            }else{
+                initHttp(split, statusLine);
             }
-            responseStatus();
             
             direction = String.format("%s->%s->%s->%s", format(src.getRemoteSocketAddress()), format(src.getLocalSocketAddress())
                 ,target.getLocalPort(), format(target.getRemoteSocketAddress()));
@@ -210,62 +210,47 @@ public class Socket5Service implements InfoContributor {
             
             log.info("{} connected {}", serverPort, direction);
         }
-        /**
-         * 获取认证方法并通过认证 默认为无身份认证
-         * 接受的三个参数分别是
-         * ver:socket版本(5)--1字节
-         * nmethods:在下一个参数的方法数 --1字节
-         * methods:方法 --1至255字节
-         *  X’00’ NO AUTHENTICATION REQUIRED                            无身份验证
-         *  X’01’ GSSAPI                                                                    未知
-         *  X’02’ USERNAME/PASSWORD                                                 用户名/密码
-         *  X’03’ to X’7F’ IANA ASSIGNED                                    保留位
-         *  X’80’ to X’FE’ RESERVED FOR PRIVATE METHODS             私有位
-         *  X’FF’ NO ACCEPTABLE METHODS                     没有可用方法
-         */
-        private void acceptAuth() throws IOException{
-            byte[] b = new byte[3];
-            srcIn.read(b);
-            if(b[0]==5&&b[1]==1&&b[2]==0) {
-                srcOut.write(new byte[] {5,0});
+
+        private void initHttp(String[] statusLine, String statusLineRaw) throws IOException {
+            URL url = new URL(statusLine[1]);
+            int port = url.getPort();
+            if(port==-1) port = url.getDefaultPort();
+            targetStr = url.getHost()+":"+port;
+            try{
+                this.target = new Socket(url.getHost(), port);
+            }catch(IOException e){
+                throw new IOException(String.format("连接目标失败[%s]", targetStr), e);
             }
+            
+            OutputStream targetOut = target.getOutputStream();
+            targetOut.write(statusLineRaw.getBytes());
+            targetOut.write('\n');
+            targetOut.flush();
         }
-        /**
-         * 获取域名
-         * 域名前一位为域名字符串的长度 每个字符为一个字节
-         * 长度前四位分别是 
-         * ver:socket版本(5) 
-         * cmd:sock命令码(1 tcp,2 bind,3 udp) 
-         * rsv:保留字段
-         * atyp:地址类型(ipv4 1,域名 3,ipv6 4)
-         * @return
-         */
-        
-        private String targetDomain() throws IOException {
-            byte[] c = new byte[4];
-            srcIn.read(c);
-            int domainLen = srcIn.read();
-            byte[] domainarr = new byte[domainLen];
-            srcIn.read(domainarr);
-            return new String(domainarr);
+        private void initHttps(String[] statusLine) throws IOException {
+            while(!"".equals(readline(srcIn))){}
+            targetStr = statusLine[1];
+            String[] split = targetStr.split("[:]");
+            try{
+                this.target = new Socket(split[0], Integer.valueOf(split[1]));
+            }catch(IOException e){
+                throw new IOException(String.format("连接目标失败[%s]", targetStr), e);
+            }
+            
+            srcOut.write("HTTP/1.0 200 Connection established\r\nProxy-Agent: lvt4j-SocketProxy/1.0\r\n\r\n".getBytes());
+            srcOut.flush();
         }
-        
-        /**
-         * 获取端口号
-         * 一般在域名或地址之后的两个字符 所以用short类型返回
-         */
-        private short targetPort() throws IOException {  
-            byte[] portarr=new byte[2];
-            srcIn.read(portarr);
-            return Shorts.fromByteArray(portarr);
-        }
-        /**
-         * 向源主机发送此次请求的状态 是否成功等
-         * 一定要在源主机向服务器发送完域名和端口信息的下一条发送
-         */
-        private void responseStatus() throws IOException {
-            byte[] status = {0x05,0x00,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00};
-            srcOut.write(status);
+        private String readline(InputStream in) throws IOException {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            int b;
+            while(true){
+                b = in.read();
+                if(b==-1) break;
+                if(b=='\n') break;
+                if(b=='\r') continue;
+                baos.write(b);
+            }
+            return baos.toString();
         }
         
         private long latestTouchTime() {
