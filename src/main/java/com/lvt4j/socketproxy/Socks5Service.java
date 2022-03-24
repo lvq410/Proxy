@@ -88,7 +88,7 @@ public class Socks5Service implements InfoContributor {
     
     @Override
     public void contribute(Builder builder) {
-        builder.withDetail("socket5", instances.values().stream().collect(toMap(s->s.port, s->s.info())));
+        builder.withDetail("socks5", instances.values().stream().collect(toMap(s->s.port, s->s.info())));
     }
     
     private class ServerThread extends Thread {
