@@ -1,5 +1,6 @@
 package com.lvt4j.socketproxy;
 
+import java.net.InetAddress;
 import java.net.SocketAddress;
 
 import org.apache.commons.lang3.StringUtils;
@@ -21,6 +22,9 @@ public class SocketProxyApp {
     
     
     public static String format(SocketAddress addr) {
+        return StringUtils.strip(addr.toString(), "/");
+    }
+    public static String format(InetAddress addr) {
         return StringUtils.strip(addr.toString(), "/");
     }
 }

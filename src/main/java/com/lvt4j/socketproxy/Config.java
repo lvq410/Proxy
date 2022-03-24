@@ -28,7 +28,7 @@ import lombok.Setter;
 public class Config {
 
     public static Runnable changeCallback_tcp;
-    public static Runnable changeCallback_socket5;
+    public static Runnable changeCallback_socks5;
     public static Runnable changeCallback_http;
     
     @Setter@Getter
@@ -38,7 +38,7 @@ public class Config {
     private Map<Integer, String> tcp;
     
     @Getter@Setter
-    private Set<Integer> socket5 = emptySet();
+    private Set<Integer> socks5 = emptySet();
     @Getter@Setter
     private Set<Integer> http = emptySet();
     
@@ -62,7 +62,7 @@ public class Config {
                 Thread.sleep(1000);
             }catch(Exception ig){}
             if(changeCallback_tcp!=null) changeCallback_tcp.run();
-            if(changeCallback_socket5!=null) changeCallback_socket5.run();
+            if(changeCallback_socks5!=null) changeCallback_socks5.run();
             if(changeCallback_http!=null) changeCallback_http.run();
         }).start();
     }
