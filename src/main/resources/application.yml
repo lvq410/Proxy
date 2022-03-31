@@ -37,3 +37,12 @@ socks5:
 
 http:
 - 80
+
+intranet:
+- type: entry
+  port: 2000
+  relayListernPort: 2001
+- type: relay
+  entry: 127.0.0.1:2001
+  target: ip:port
+

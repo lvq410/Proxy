@@ -43,7 +43,4 @@ class IOTransmitterThread extends Thread {
         }
     }
 
-
-
-
 }

@@ -1,8 +1,11 @@
 package com.lvt4j.socketproxy;
 
+import static java.util.Collections.emptyList;
 import static java.util.Collections.emptySet;
 import static java.util.stream.Collectors.toMap;
 
+import java.net.InetSocketAddress;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.Map.Entry;
@@ -15,6 +18,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.cloud.context.config.annotation.RefreshScope;
 import org.springframework.context.annotation.Configuration;
 
+import lombok.Data;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -42,6 +46,9 @@ public class Config {
     @Getter@Setter
     private Set<Integer> http = emptySet();
     
+    @Getter@Setter
+    private List<IntranetConfig> intranet = emptyList();
+    
     public void setTcp(Map<Integer, String> proxy) {
         this.tcp = proxy.entrySet().stream()
             .filter(e->isValidTarget(e.getValue())).collect(toMap(Entry::getKey, Entry::getValue));
@@ -65,6 +72,32 @@ public class Config {
             if(changeCallback_socks5!=null) changeCallback_socks5.run();
             if(changeCallback_http!=null) changeCallback_http.run();
         }).start();
+    }
+    
+    /**
+     * 内网穿透配置
+     * @author LV on 2022年3月28日
+     */
+    @Data
+    static class IntranetConfig {
+        
+        public Type type;
+        public int port;
+        public Integer relayListernPort;
+        public InetSocketAddress entry;
+        public InetSocketAddress target;
+        
+        public enum Type {
+            /**
+             * 入口服务
+             */
+            Entry
+            /**
+             * 转发服务
+             */
+            ,Relay
+            ;
+        }
     }
     
 }

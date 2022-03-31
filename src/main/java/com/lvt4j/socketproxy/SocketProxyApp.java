@@ -8,6 +8,9 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
+import com.google.common.primitives.Ints;
+import com.google.common.primitives.Longs;
+
 /**
  *
  * @author LV on 2022年3月11日
@@ -17,7 +20,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 public class SocketProxyApp {
 
     public static void main(String[] args) {
-        SpringApplication.run(SocketProxyApp.class, args);
+//        SpringApplication.run(SocketProxyApp.class, args);
+        System.out.println(Ints.toByteArray(Integer.MAX_VALUE).length);
     }
     
     
