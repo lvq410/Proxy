@@ -1,22 +1,18 @@
 package com.lvt4j.socketproxy;
 
-import static java.util.Collections.emptyList;
 import static java.util.Collections.emptySet;
-import static java.util.stream.Collectors.toMap;
 
-import java.net.InetSocketAddress;
-import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
-import java.util.Map.Entry;
 
 import javax.annotation.PreDestroy;
 
-import org.apache.commons.lang3.StringUtils;
-import org.apache.commons.lang3.math.NumberUtils;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.cloud.context.config.annotation.RefreshScope;
 import org.springframework.context.annotation.Configuration;
+
+import com.google.common.net.HostAndPort;
 
 import lombok.Data;
 import lombok.Getter;
@@ -39,27 +35,22 @@ public class Config {
     private long maxIdleTime;
     
     @Getter
-    private Map<Integer, String> tcp;
+    private Map<Integer, HostAndPort> tcp;
     
     @Getter@Setter
     private Set<Integer> socks5 = emptySet();
     @Getter@Setter
     private Set<Integer> http = emptySet();
     
-    @Getter@Setter
-    private List<IntranetConfig> intranet = emptyList();
-    
     public void setTcp(Map<Integer, String> proxy) {
-        this.tcp = proxy.entrySet().stream()
-            .filter(e->isValidTarget(e.getValue())).collect(toMap(Entry::getKey, Entry::getValue));
-    }
-    private boolean isValidTarget(String target) {
-        if(StringUtils.isBlank(target)) return false;
-        String[] splits = target.split("[:]",2);
-        if(splits.length!=2) return false;
-        if(StringUtils.isBlank(splits[0])) return false;
-        if(!NumberUtils.isDigits(splits[1])) return false;
-        return true;
+        Map<Integer, HostAndPort> tcp = new HashMap<>();
+        
+        proxy.forEach((p,a)->{
+            HostAndPort hp = ProxyApp.validHostPort(a);
+            if(hp==null) return;
+            tcp.put(p, hp);
+        });
+        this.tcp = tcp;
     }
     
     @PreDestroy
@@ -84,8 +75,8 @@ public class Config {
         public Type type;
         public int port;
         public Integer relayListernPort;
-        public InetSocketAddress entry;
-        public InetSocketAddress target;
+        public HostAndPort entry;
+        public HostAndPort target;
         
         public enum Type {
             /**

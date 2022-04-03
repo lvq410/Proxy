@@ -1,247 +1,241 @@
 package com.lvt4j.socketproxy;
 
-import static com.lvt4j.socketproxy.SocketProxyApp.format;
+import static com.lvt4j.socketproxy.ProxyApp.format;
+import static com.lvt4j.socketproxy.ProxyApp.port;
+import static java.nio.channels.SelectionKey.OP_ACCEPT;
 import static java.util.stream.Collectors.groupingBy;
 import static java.util.stream.Collectors.mapping;
 import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
-import static java.util.stream.Collectors.toSet;
 
-import java.io.Closeable;
 import java.io.IOException;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.net.SocketException;
+import java.net.InetSocketAddress;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
-import java.util.Map.Entry;
-import java.util.Set;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
 
-import org.apache.commons.lang3.ObjectUtils;
-import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.info.Info.Builder;
 import org.springframework.boot.actuate.info.InfoContributor;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import lombok.Setter;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.net.HostAndPort;
+
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * 纯Tcp转发代理
- * @author LV on 2022年3月11日
+ * tcp直连代理（反向代理）
+ * @author LV on 2022年3月31日
  */
 @Slf4j
 @Service
-public class TcpService implements InfoContributor {
+public class TcpService extends Thread implements InfoContributor {
 
     @Autowired
     private Config config;
+    @Autowired
+    private ChannelConnector connector;
     
-    private Map<Integer, ServerThread> instances = new HashMap<>();
+    private Selector acceptor;
+    
+    private Map<Integer, ServerMeta> servers = new HashMap<>();
     
     @PostConstruct
-    private synchronized void init() {
-        Config.changeCallback_tcp = this::init;
+    private void init() throws IOException {
+        setName("TcpService");
+        acceptor = Selector.open();
         
-        for(Entry<Integer, String> entry : config.getTcp().entrySet()){
-            int port = entry.getKey();
-            String target = entry.getValue();
-            
-            ServerThread s = instances.get(port);
-            if(s==null){
+        Config.changeCallback_tcp = this::reloadConfig;
+        
+        reloadConfig();
+        start();
+    }
+    
+    private synchronized void reloadConfig() {
+        Map<Integer, HostAndPort> tcp = config.getTcp();
+        tcp.forEach((port,target)->{
+            ServerMeta meta = servers.get(port);
+            if(meta==null){
+                meta = new ServerMeta();
+                
+                ServerSocketChannel serverSocketChannel = null;
                 try{
-                    s = new ServerThread(port, target);
-                    instances.put(port, s);
+                    serverSocketChannel = ServerSocketChannel.open();
+                    serverSocketChannel.bind(new InetSocketAddress(port));
+                    serverSocketChannel.configureBlocking(false);
+                    
+                    meta.port = port;
+                    meta.serverSocketChannel = serverSocketChannel;
+                    meta.target = target;
+                    meta.src2target = new ChannelTransmitter(port+" s->t");
+                    meta.target2src = new ChannelTransmitter(port+" t->s");
+                    
+                    synchronized(this){
+                        acceptor.wakeup();
+                        serverSocketChannel.register(acceptor, OP_ACCEPT, meta);
+                    }
+                    
+                    servers.put(port, meta);
+                    
+                    log.info("{} tcp代理启动,目标 {}", port, target);
                 }catch(Exception e){
-                    log.error("启动服务线程[{}]失败", port, e);
+                    log.error("{} tcp代理启动失败", port, e);
+                    ProxyApp.close(serverSocketChannel);
                 }
             }else{
-                s.setTarget(target);
+                meta.target = target;
             }
-        }
-        Set<Integer> removeds = instances.keySet().stream().filter(k->!config.getTcp().containsKey(k)).collect(toSet());
-        for(Integer removed : removeds){
-            ServerThread s = instances.remove(removed);
+        });
+        ImmutableSet.copyOf(servers.keySet()).stream().filter(k->!tcp.containsKey(k)).forEach(removed->{
+            ServerMeta s = servers.remove(removed);
             if(s!=null) s.destory();
-        }
+        });
     }
     
     @PreDestroy
-    private synchronized void destory() {
+    private synchronized void destory() throws IOException {
         Config.changeCallback_tcp = null;
-        instances.values().forEach(ServerThread::destory);
+        ImmutableSet.copyOf(servers.values()).forEach(ServerMeta::destory);
+        acceptor.close();
     }
     
-    @Scheduled(cron="* * * * * ?")
+    @Scheduled(cron="0/10 * * * * ?")
     public synchronized void cleanIdle() {
-        instances.values().forEach(ServerThread::cleanIdle);
+        servers.values().forEach(ServerMeta::cleanIdle);
     }
     
     @Override
     public void contribute(Builder builder) {
-        builder.withDetail("tcp", instances.values().stream().collect(toMap(s->s.port, s->s.info())));
+        builder.withDetail("tcp", servers.values().stream().collect(toMap(s->s.port+"->"+s.target, s->s.info())));
     }
     
-    private class ServerThread extends Thread {
-        
-        private final int port;
-        @Setter
-        private String target;
-        
-        private final ServerSocket server;
-        
-        private List<Connect> connects = Collections.synchronizedList(new LinkedList<>());
-        
-        public ServerThread(int port, String target) throws IOException {
-            this.port = port;
-            this.target = target;
+    @Override
+    public void run() {
+        while(acceptor.isOpen()){
             try{
-                server = new ServerSocket(port);
-            }catch(IOException e){
-                throw new IOException(String.format("启动服务端口[%s]失败", port), e);
+                acceptor.select();
+            }catch(Exception e){
+                log.error("acceptor select err", e);
+                return;
             }
-            log.info("{} tcp proxy start, target {}", port, target);
-            setName(port+" server");
-            start();
-        }
-
-        @Override
-        public void run() {
-            while(!server.isClosed()){
-                Socket src;
+            if(!acceptor.isOpen()) return;
+            synchronized(this){
+                //等待可能的注册
+            }
+            Iterator<SelectionKey> keys = acceptor.selectedKeys().iterator();
+            while(keys.hasNext()){
+                SelectionKey key = keys.next();
+                keys.remove();
+                ServerMeta serverMeta = (ServerMeta) key.attachment();
                 try{
-                    src = server.accept();
-                }catch(Exception e) {
-                    if((e instanceof SocketException) && StringUtils.containsAny(e.getMessage(), "Socket closed", "Socket is closed", "socket closed")){
-                        return;
-                    }
-                    log.error("{} server socket accept err", port, e);
-                    continue;
-                }
-                try{
-                    connects.add(new Connect(port, src, target));
+                    accept(key, serverMeta);
                 }catch(Exception e){
-                    log.error("{} server socket initial connect error", port, e);
+                    log.error("establish connection err", e);
                 }
             }
         }
+    }
+    private void accept(SelectionKey key, ServerMeta serverMeta) throws IOException {
+        SocketChannel src = ((ServerSocketChannel)key.channel()).accept();
+        src.configureBlocking(false);
+        
+        HostAndPort targetConfig = serverMeta.target;
+        SocketChannel target = SocketChannel.open();
+        target.configureBlocking(false);
+        target.connect(new InetSocketAddress(targetConfig.getHostText(), targetConfig.getPort()));
+        
+        ServerMeta.ConnectMeta connect = serverMeta.new ConnectMeta(src, targetConfig, target);
+        
+        connect.direction = String.format("%s->%s->%s->%s"
+            ,format(src.getRemoteAddress()), port(src.getLocalAddress())
+            ,"initializing" , format(target.getRemoteAddress()));
+        
+        connector.connectListen(target, ()->{
+            connect.direction = String.format("%s->%s->%s->%s"
+                ,format(src.getRemoteAddress()), port(src.getLocalAddress())
+                ,port(target.getLocalAddress()), format(target.getRemoteAddress()));
+            
+            serverMeta.connections.add(connect);
+            
+            serverMeta.src2target.transmit(src, target, 1024, connect::onTrans, connect::onException);
+            serverMeta.target2src.transmit(target, src, 1024, connect::onTrans, connect::onException);
+            
+            log.info("{} connected {}", serverMeta.port, connect.direction);
+        }, connect::onException);
+    }
+    
+    private class ServerMeta {
+        private int port;
+        private ServerSocketChannel serverSocketChannel;
+        private HostAndPort target;
+        
+        private ChannelTransmitter src2target;
+        private ChannelTransmitter target2src;
+        
+        private List<ConnectMeta> connections = Collections.synchronizedList(new LinkedList<>());
         
         public void destory() {
-            synchronized (connects) {
-                for(Connect connect : connects){
-                    connect.destory();
-                }
-                connects.clear();
-                try{
-                    server.close();
-                }catch(Exception e){
-                    log.warn("{} server socket close err", port, e);
-                }
-                try{
-                    join(1000);
-                }catch(Exception e){
-                    log.warn("{} server socket wait accept thread destory timeout", port, e);
-                }
-                log.info("{} ServerSocket destoried", port);
-            }
+            ImmutableSet.copyOf(connections).forEach(ConnectMeta::destory);
+            src2target.destory(); target2src.destory();
+            ProxyApp.close(serverSocketChannel);
+            servers.remove(port);
+            log.info("{} tcp代理停止", port);
         }
         
         public void cleanIdle() {
-            synchronized (connects) {
-                List<Connect> cleaned = new LinkedList<>();
-                for(Connect connect : connects){
-                    if(System.currentTimeMillis()-connect.latestTouchTime()<config.getMaxIdleTime()) continue;
+            synchronized (connections) {
+                for(ConnectMeta connect : ImmutableSet.copyOf(connections)){
+                    if(System.currentTimeMillis()-connect.latestTouchTime<config.getMaxIdleTime()) continue;
                     connect.destory();
-                    cleaned.add(connect);
                 }
-                connects.removeAll(cleaned);
             }
         }
         
-        public Map<String, List<String>> info() {
-            return connects.stream().collect(groupingBy(c->c.targetConfig, mapping(c->c.direction, toList())));
+        public Object info() {
+            return connections.stream().collect(groupingBy(c->c.targetConfig, mapping(c->c.direction, toList())));
         }
         
-        @Override
-        public String toString() {
-            return String.format("%s %s cnns: %s", port, target, connects.size());
+        @RequiredArgsConstructor
+        private class ConnectMeta {
+            private final SocketChannel src;
+            
+            private final HostAndPort targetConfig;
+            private final SocketChannel target;
+            
+            private String direction;
+            
+            private long latestTouchTime = System.currentTimeMillis();
+            
+            private void onTrans() {
+                latestTouchTime = System.currentTimeMillis();
+            }
+            
+            private synchronized void onException(Exception e) {
+                log.error("connection {} err", direction, e);
+                destory();
+            }
+            
+            private void destory() {
+                ProxyApp.close(src);
+                ProxyApp.close(target);
+                connections.remove(this);
+                
+                log.info("{} disconnected {}", port, direction);
+            }
         }
     }
-    private class Connect implements Closeable {
-        
-        private final int serverPort;
-        private final Socket src;
-        private final String targetConfig;
-        private final Socket target;
-        
-        private final String direction;
-        
-        private IOTransmitterThread src2Target;
-        private IOTransmitterThread target2Src;
-        
-        private final long createTime = System.currentTimeMillis();
-        
-        public Connect(int serverPort, Socket src, String targetConfig) throws IOException {
-            this.serverPort = serverPort;
-            this.src = src;
-            this.targetConfig = targetConfig;
-            String[] splits = targetConfig.split("[:]", 2);
-            try{
-                this.target = new Socket(splits[0], Integer.valueOf(splits[1]));
-            }catch(IOException e){
-                throw new IOException(String.format("连接目标失败[%s]", targetConfig), e);
-            }
-            
-            direction = String.format("%s->%s->%s->%s", format(src.getRemoteSocketAddress()), format(src.getLocalSocketAddress())
-                ,target.getLocalPort(), format(target.getRemoteSocketAddress()));
-            
-            src2Target = new IOTransmitterThread(serverPort+"->"+targetConfig, log, src.getInputStream(), target.getOutputStream());
-            target2Src = new IOTransmitterThread(serverPort+"<-"+targetConfig, log, target.getInputStream(), src.getOutputStream());
-            
-            log.info("{} connected {}", serverPort, direction);
-        }
-        
-        private long latestTouchTime() {
-            return ObjectUtils.max(createTime,
-                Optional.ofNullable(src2Target).map(t->t.latestTouchTime).orElse(null),
-                Optional.ofNullable(target2Src).map(t->t.latestTouchTime).orElse(null));
-        }
-        
-        @Override
-        public synchronized void close() throws IOException {
-            destory();
-        }
-        private synchronized void destory() {
-            try{
-                if(src!=null && !src.isClosed()) src.close();
-            }catch(Exception e){
-                log.warn("{} connection {} close src err", serverPort, direction, e);
-            }
-            try{
-                if(target!=null && !target.isClosed()) target.close();
-            }catch(Exception e){
-                log.warn("{} connection {} close err", serverPort, direction, e);
-            }
-            try{
-                if(src2Target!=null && src2Target.isAlive()) src2Target.join(1000);
-            }catch(Exception e){
-                log.warn("{} connection {} wait src to target data transfer thread destory timeout", serverPort, direction, e);
-            }
-            try{
-                if(target2Src!=null && target2Src.isAlive()) target2Src.join(1000);
-            }catch(Exception e){
-                log.warn("{} connection {} wait target to src data transfer thread destory timeout", serverPort, direction, e);
-            }
-            log.info("{} connection {} closed", serverPort, direction);
-        }
-    }
+    
 }

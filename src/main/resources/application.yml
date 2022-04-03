@@ -14,9 +14,10 @@ server.port: ${management.server.port}
 spring:
   main:
     banner-mode: "OFF"
-  application.name: socket-proxy
+  application.name: proxy
   boot.admin.client:
-    enabled: false
+#    enabled: false
+    enabled: true
     url: http://localhost:25020
     instance.prefer-ip: true
     auto-deregistration: true
