@@ -125,7 +125,7 @@ public class Socks5Service implements InfoContributor {
             this.port = port;
             
             try{
-                serverSocketChannel = ProxyApp.server(port);
+                serverSocketChannel = ProxyApp.server(null, port);
                 
                 src2target = new ChannelTransmitter(port+" s->t");
                 target2src = new ChannelTransmitter(port+" t->s");

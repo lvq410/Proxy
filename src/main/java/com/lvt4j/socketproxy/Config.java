@@ -1,12 +1,11 @@
 package com.lvt4j.socketproxy;
 
+import static com.lvt4j.socketproxy.ProxyApp.format;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.emptySet;
 
-import java.util.ArrayList;
-import java.util.HashMap;
+import java.net.InetAddress;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 import javax.annotation.PreDestroy;
@@ -40,7 +39,7 @@ public class Config {
     private long maxIdleTime;
     
     @Getter
-    private Map<Integer, HostAndPort> tcp;
+    private List<TcpConfig> tcp = emptyList();
     @Getter@Setter
     private Set<Integer> socks5 = emptySet();
     @Getter@Setter
@@ -48,34 +47,29 @@ public class Config {
     @Getter
     private List<IntranetConfig> intranet = emptyList();
     
-    public void setTcp(Map<Integer, String> proxy) {
-        Map<Integer, HostAndPort> tcp = new HashMap<>();
-        
-        proxy.forEach((p,a)->{
-            HostAndPort hp = ProxyApp.validHostPort(a);
-            if(hp==null) return;
-            tcp.put(p, hp);
-        });
+    public void setTcp(List<TcpConfig> tcp) {
+        for(TcpConfig c : tcp){
+            Validate.notNull(c.target, "tcp反向代理，target配置不能为空");
+            Validate.notNull(0<c.port, "tcp反向代理，port配置不能为空");
+            Validate.isTrue(0<c.getPort() && c.getPort()<65535, "tcp反向代理，port配置必须在(0~65535]内");
+        }
         this.tcp = tcp;
     }
     
     public void setIntranet(List<IntranetConfig> intranet) {
-        List<IntranetConfig> cs = new ArrayList<>(intranet.size());
         for(IntranetConfig c : intranet){
             switch(c.getType()){
             case Entry:
                 Validate.notNull(c.port, "intranet entry 服务 port配置不能为空");
                 Validate.notNull(c.relay, "intranet entry 服务 relay配置不能为空");
-                cs.add(c);
                 break;
             case Relay:
                 Validate.notNull(c.entry, "intranet entry 服务 entry配置不能为空");
                 Validate.notNull(c.target, "intranet entry 服务 entry配置不能为空");
-                cs.add(c);
                 break;
             }
         }
-        this.intranet = cs;
+        this.intranet = intranet;
     }
     
     @PreDestroy
@@ -89,6 +83,35 @@ public class Config {
             if(changeCallback_http!=null) changeCallback_http.run();
             if(changeCallback_intranet!=null) changeCallback_intranet.run();
         }).start();
+    }
+    
+    /**
+     * tcp反向代理配置
+     * @author LV on 2022年4月7日
+     */
+    @Data
+    public static class TcpConfig {
+        /** 绑定的host，可以为空 */
+        public InetAddress host;
+        public Integer port;
+        public HostAndPort target;
+        
+        public void setTarget(String target) {
+            this.target = ProxyApp.validHostPort(target);
+            Validate.notNull(this.target, "非法的地址:%s", target);
+        }
+        
+        public String shortDirection() {
+            String direction = String.valueOf(port);
+            if(host!=null) direction = format(host)+":"+direction;
+            return direction;
+        }
+        
+        public String direction() {
+            String direction = String.format("%s->%s", port, target);
+            if(host!=null) direction = format(host)+":"+direction;
+            return direction;
+        }
     }
     
     /**

@@ -30,12 +30,20 @@ logging:
 
 maxIdleTime: 60000
 tcp:
-  8080: null
+#- port: 80
+#  host: bind-host
+#  target: target:port
 
 socks5:
-- 1080
+#- 1080
 
 http:
-- 80
+#- 80
 
 intranet:
+#- type: entry
+#  port: 80
+#  relay: 82
+#- type: relay
+#  entry: entry-host:port
+#  target: target-host:port

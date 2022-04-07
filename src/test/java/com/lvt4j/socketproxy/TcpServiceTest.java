@@ -7,6 +7,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -15,7 +16,9 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
-import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.net.HostAndPort;
+import com.lvt4j.socketproxy.Config.TcpConfig;
 
 /**
  *
@@ -28,6 +31,7 @@ public class TcpServiceTest extends BaseTest {
     private TcpService service;
     
     private Config config;
+    private TcpConfig tcpConfig;
     private ChannelAcceptor acceptor;
     private ChannelConnector connector;
     
@@ -46,7 +50,10 @@ public class TcpServiceTest extends BaseTest {
         service = new TcpService();
         
         config = new Config();
-        config.setTcp(ImmutableMap.of(port, "127.0.0.1:"+serverPort));
+        tcpConfig = new TcpConfig();
+        tcpConfig.port = port;
+        tcpConfig.target = HostAndPort.fromParts("127.0.0.1", serverPort);
+        config.setTcp(Arrays.asList(tcpConfig));
         
         acceptor = new ChannelAcceptor(); invoke(acceptor, "init");
         connector = new ChannelConnector(); invoke(connector, "init");
@@ -78,35 +85,33 @@ public class TcpServiceTest extends BaseTest {
     @Test(timeout=60000)
     @SuppressWarnings("unchecked")
     public void reload() throws Exception {
-        Map<Integer, String> tcp = ImmutableMap.of(
-            port, "127.0.0.1:"+serverPort,
-            availablePort(), "127.0.0.1:"+serverPort);
-        config.setTcp(tcp);
+        TcpConfig tcpConfig2 = new TcpConfig();
+        tcpConfig2.port = availablePort();
+        tcpConfig2.target = HostAndPort.fromParts("127.0.0.1", serverPort);
+        
+        config.setTcp(Arrays.asList(tcpConfig, tcpConfig2));
         invoke(service, "reloadConfig");
         Map<Integer, ?> servers = (Map<Integer, ?>) FieldUtils.readField(service, "servers", true);
-        assertEquals(tcp.size(), servers.size());
-        assertEquals(tcp.keySet(), servers.keySet());
+        assertEquals(2, servers.size());
+        assertEquals(ImmutableSet.of(tcpConfig, tcpConfig2), servers.keySet());
         
-        tcp = ImmutableMap.of(
-            availablePort(), "127.0.0.1:"+serverPort);
-        config.setTcp(tcp);
+        config.setTcp(Arrays.asList(tcpConfig2));
         invoke(service, "reloadConfig");
         servers = (Map<Integer, ?>) FieldUtils.readField(service, "servers", true);
-        assertEquals(tcp.size(), servers.size());
-        assertEquals(tcp.keySet(), servers.keySet());
+        assertEquals(1, servers.size());
+        assertEquals(ImmutableSet.of(tcpConfig2), servers.keySet());
     }
     
     @Test(timeout=60000)
-    @SuppressWarnings("unchecked")
     public void cleanIdle() throws Exception {
         config.setMaxIdleTime(1);
         
         trans();
         
-        Map<Integer, ?> servers = (Map<Integer, ?>) FieldUtils.readField(service, "servers", true);
+        Map<?, ?> servers = (Map<?, ?>) FieldUtils.readField(service, "servers", true);
         assertEquals(1, servers.size());
         
-        Object serverMeta = servers.get(port);
+        Object serverMeta = servers.get(tcpConfig);
         List<?> connections = (List<?>) FieldUtils.readField(serverMeta, "connections", true);
         assertEquals(1, connections.size());
         
@@ -135,13 +140,12 @@ public class TcpServiceTest extends BaseTest {
         assertCnns(1);
     }
     
-    @SuppressWarnings("unchecked")
     private void assertCnns(int expectedSize) throws Exception {
         Thread.sleep(100); 
         
-        Map<Integer, ?> servers = (Map<Integer, ?>) FieldUtils.readField(service, "servers", true);
+        Map<?, ?> servers = (Map<?, ?>) FieldUtils.readField(service, "servers", true);
         
-        Object serverMeta = servers.get(port);
+        Object serverMeta = servers.get(tcpConfig);
         List<?> connections = (List<?>) FieldUtils.readField(serverMeta, "connections", true);
         assertEquals(expectedSize, connections.size());
     }

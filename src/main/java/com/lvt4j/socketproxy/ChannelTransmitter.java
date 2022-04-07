@@ -33,6 +33,7 @@ public class ChannelTransmitter extends Thread implements UncaughtExceptionHandl
     
     public ChannelTransmitter(String name) throws IOException {
         super(name);
+        setDefaultUncaughtExceptionHandler(this);
         selector = Selector.open();
         start();
     }

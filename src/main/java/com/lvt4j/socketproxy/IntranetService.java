@@ -143,8 +143,8 @@ public class IntranetService implements InfoContributor {
             this.relay = config.relay;
             
             try{
-                server = ProxyApp.server(port);
-                relayServer = ProxyApp.server(relay);
+                server = ProxyApp.server(null, port);
+                relayServer = ProxyApp.server(null, relay);
                 
                 reader = new ChannelReader(); reader.init(port+" entry reader");
                 writer = new ChannelWriter(); writer.init(port+" entry writer");

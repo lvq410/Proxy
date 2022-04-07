@@ -33,10 +33,10 @@ public class ProxyApp {
         SpringApplication.run(ProxyApp.class, args);
     }
     
-    public static ServerSocketChannel server(int port) throws IOException {
+    public static ServerSocketChannel server(InetAddress host, int port) throws IOException {
         try{
             ServerSocketChannel channel = ServerSocketChannel.open();
-            channel.bind(new InetSocketAddress(port));
+            channel.bind(new InetSocketAddress(host, port));
             channel.configureBlocking(false);
             return channel;
         }catch(IOException e){

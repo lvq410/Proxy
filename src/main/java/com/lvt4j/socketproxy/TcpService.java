@@ -9,6 +9,7 @@ import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
 
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
@@ -29,6 +30,7 @@ import org.springframework.stereotype.Service;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.common.net.HostAndPort;
+import com.lvt4j.socketproxy.Config.TcpConfig;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -47,7 +49,7 @@ public class TcpService implements InfoContributor {
     @Autowired
     private ChannelConnector connector;
     
-    private Map<Integer, ServerMeta> servers = new HashMap<>();
+    private Map<TcpConfig, ServerMeta> servers = new HashMap<>();
     
     @PostConstruct
     private void init() throws IOException {
@@ -57,21 +59,18 @@ public class TcpService implements InfoContributor {
     }
     
     private synchronized void reloadConfig() {
-        Map<Integer, HostAndPort> tcp = config.getTcp();
-        tcp.forEach((port,target)->{
-            ServerMeta meta = servers.get(port);
-            if(meta==null){
-                try{
-                    servers.put(port, new ServerMeta(port, target));
-                    log.info("{} tcp代理启动,目标 {}", port, target);
-                }catch(Exception e){
-                    log.error("{} tcp代理启动失败", port, e);
-                }
-            }else{
-                meta.target = target;
+        List<TcpConfig> tcp = config.getTcp();
+        for(TcpConfig c : tcp){
+            ServerMeta meta = servers.get(c);
+            if(meta!=null) continue;
+            try{
+                servers.put(c, new ServerMeta(c));
+                log.info("{} tcp代理启动,目标 {}", c.shortDirection(), c.getTarget());
+            }catch(Exception e){
+                log.error("{} tcp代理启动失败", c.shortDirection(), e);
             }
-        });
-        ImmutableSet.copyOf(servers.keySet()).stream().filter(k->!tcp.containsKey(k)).forEach(removed->{
+        }
+        ImmutableSet.copyOf(servers.keySet()).stream().filter(k->!tcp.contains(k)).forEach(removed->{
             ServerMeta s = servers.remove(removed);
             if(s!=null) s.destory();
         });
@@ -90,26 +89,36 @@ public class TcpService implements InfoContributor {
     
     @Override
     public void contribute(Builder builder) {
-        builder.withDetail("tcp", servers.values().stream().collect(toMap(s->s.port+"->"+s.target, s->s.info())));
+        builder.withDetail("tcp", servers.values().stream().collect(toMap(s->s.direction, s->s.info())));
     }
     
     private class ServerMeta {
-        private int port;
-        private ServerSocketChannel serverSocketChannel;
-        private HostAndPort target;
+        private final InetAddress host;
+        private final int port;
+        private final HostAndPort target;
         
-        private ChannelTransmitter src2target;
-        private ChannelTransmitter target2src;
+        private final String shortDirection;
+        private final String direction;
         
-        private List<ConnectMeta> connections = Collections.synchronizedList(new LinkedList<>());
+        private final ServerSocketChannel serverSocketChannel;
         
-        public ServerMeta(int port, HostAndPort target) throws IOException {
-            this.port = port;
+        private final ChannelTransmitter src2target;
+        private final ChannelTransmitter target2src;
+        
+        private final List<ConnectMeta> connections = Collections.synchronizedList(new LinkedList<>());
+        
+        public ServerMeta(TcpConfig c) throws IOException {
+            this.host = c.getHost();
+            this.port = c.getPort();
+            this.target = c.getTarget();
+            
+            this.shortDirection = c.shortDirection();
+            this.direction = c.direction();
             
             try{
-                serverSocketChannel = ProxyApp.server(port);
                 
-                this.target = target;
+                serverSocketChannel = ProxyApp.server(host, port);
+                
                 src2target = new ChannelTransmitter(port+" s->t");
                 target2src = new ChannelTransmitter(port+" t->s");
                 
@@ -129,7 +138,7 @@ public class TcpService implements InfoContributor {
             if(target2src!=null) target2src.destory();
             ProxyApp.close(serverSocketChannel);
             servers.remove(port);
-            log.info("{} tcp代理停止", port);
+            log.info("{} tcp代理停止", shortDirection);
         }
         
         public void cleanIdle() {
@@ -177,7 +186,7 @@ public class TcpService implements InfoContributor {
                         src2target.transmit(src, target, 1024, this::onTrans, this::onException);
                         target2src.transmit(target, src, 1024, this::onTrans, this::onException);
                         
-                        log.info("{} connected {}", port, direction);
+                        log.info("{} connected {}", shortDirection, direction);
                     }, this::onException);
                     
                 }catch(IOException e){
@@ -200,7 +209,7 @@ public class TcpService implements InfoContributor {
                 ProxyApp.close(target);
                 connections.remove(this);
                 
-                log.info("{} disconnected {}", port, direction);
+                log.info("{} disconnected {}", shortDirection, direction);
             }
         }
     }
