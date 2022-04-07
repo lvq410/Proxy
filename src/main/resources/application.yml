@@ -16,14 +16,13 @@ spring:
     banner-mode: "OFF"
   application.name: proxy
   boot.admin.client:
-#    enabled: false
-    enabled: true
+    enabled: false
     url: http://localhost:25020
     instance.prefer-ip: true
     auto-deregistration: true
 
 logging:
-  file: logs/socket-proxy.log
+  file: logs/proxy.log
   file.max-history: 30
   level:
     root: info
@@ -40,17 +39,3 @@ http:
 - 80
 
 intranet:
-- type: entry
-  port: 2080
-  relay: 2081
-- type: relay
-  entry: 127.0.0.1:2081
-  target: 127.0.0.1:80
-
-- type: entry
-  port: 3080
-  relay: 3081
-- type: relay
-  entry: 127.0.0.1:3081
-  target: 127.0.0.1:1080
-
