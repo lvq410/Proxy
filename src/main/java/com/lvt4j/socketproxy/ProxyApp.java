@@ -1,10 +1,14 @@
 package com.lvt4j.socketproxy;
 
+import java.io.Closeable;
+import java.io.EOFException;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
-import java.nio.channels.Channel;
+import java.nio.channels.AsynchronousCloseException;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.ServerSocketChannel;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Validate;
@@ -29,7 +33,16 @@ public class ProxyApp {
         SpringApplication.run(ProxyApp.class, args);
     }
     
-    
+    public static ServerSocketChannel server(int port) throws IOException {
+        try{
+            ServerSocketChannel channel = ServerSocketChannel.open();
+            channel.bind(new InetSocketAddress(port));
+            channel.configureBlocking(false);
+            return channel;
+        }catch(IOException e){
+            throw new IOException(String.format("启动服务端口[%s]失败", port), e);
+        }
+    }
     public static HostAndPort validHostPort(String hostAndPort) {
         HostAndPort hp;
         try{
@@ -53,11 +66,17 @@ public class ProxyApp {
         return StringUtils.strip(addr.toString(), "/");
     }
     
-    public static void close(Channel channel){
+    public static void close(Closeable channel){
         if(channel==null) return;
         try{
             channel.close();
         }catch(Exception ig){}
+    }
+    public static boolean isCloseException(Exception e) {
+        if(e instanceof EOFException) return true;
+        if(e instanceof ClosedChannelException) return true;
+        if(e instanceof AsynchronousCloseException) return true;
+        return false;
     }
     
     public static interface IOExceptionConsumer<T> {

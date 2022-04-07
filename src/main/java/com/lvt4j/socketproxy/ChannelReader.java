@@ -1,14 +1,20 @@
 package com.lvt4j.socketproxy;
 
 import static java.nio.channels.SelectionKey.OP_READ;
+import static java.util.Collections.synchronizedList;
 
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
+import java.lang.Thread.UncaughtExceptionHandler;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedSelectorException;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
 import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
 import java.util.function.Consumer;
 
 import javax.annotation.PostConstruct;
@@ -18,6 +24,7 @@ import org.springframework.stereotype.Service;
 
 import com.lvt4j.socketproxy.ProxyApp.IOExceptionConsumer;
 
+import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -26,82 +33,129 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 @Service
-public class ChannelReader extends Thread {
+public class ChannelReader extends Thread implements UncaughtExceptionHandler {
 
     private Selector selector;
     
+    /** 待注册队列 */
+    private List<Runnable> registerQueue = synchronizedList(new LinkedList<>());
+    
     @PostConstruct
-    private void init() throws IOException {
-        setName("ChannelReader");
+    public void init() throws IOException {
+        init("ChannelReader");
+    }
+    public void init(String name) throws IOException {
+        setName(name);
+        setUncaughtExceptionHandler(this);
         selector = Selector.open();
         start();
     }
     
     @PreDestroy
-    private void destory() {
+    public void destory() {
         try{
             selector.close();
         }catch(Exception e){
             log.error("channel reader close err", e);
         }
     }
+    @Override
+    public void uncaughtException(Thread t, Throwable e) {
+        if(e instanceof ClosedSelectorException) return;
+        log.error("channel reader err", e);
+    }
     
-    public synchronized void readOne(SocketChannel channel, IOExceptionConsumer<Byte> onRead, Consumer<Exception> exHandler) {
-        ReadOneMeta meta = new ReadOneMeta();
-        meta.channel = channel;
-        meta.buf = ByteBuffer.allocate(1);
-        meta.onRead = onRead;
-        meta.exHandler = exHandler;
-        
-        read(meta);
+    public void readOne(SocketChannel channel, IOExceptionConsumer<Byte> onRead, Consumer<Exception> exHandler) {
+        registerQueue.add(()->{
+            ReadOneMeta meta = new ReadOneMeta();
+            meta.channel = channel;
+            meta.buf = ByteBuffer.allocate(1);
+            meta.onRead = onRead;
+            meta.exHandler = exHandler;
+            
+            read(meta);
+        });
+        selector.wakeup();
     }
-    public synchronized void readUntilByte(SocketChannel channel, byte specifyByte
+    public void readUntilByte(SocketChannel channel, byte specifyByte
             ,IOExceptionConsumer<byte[]> onRead, Consumer<Exception> exHandler) {
-        ReadUntitSpecifyByteMeta meta = new ReadUntitSpecifyByteMeta();
-        meta.channel = channel;
-        meta.specifyByte = specifyByte;
-        meta.buf = ByteBuffer.allocate(1);
-        meta.readed = new ByteArrayOutputStream();
-        meta.onRead = onRead;
-        meta.exHandler = exHandler;
-        
-        read(meta);
+        registerQueue.add(()->{
+            ReadUntitSpecifyByteMeta meta = new ReadUntitSpecifyByteMeta();
+            meta.channel = channel;
+            meta.specifyByte = specifyByte;
+            meta.buf = ByteBuffer.allocate(1);
+            meta.readed = new ByteArrayOutputStream();
+            meta.onRead = onRead;
+            meta.exHandler = exHandler;
+            
+            read(meta);
+        });
+        selector.wakeup();
     }
-    public synchronized void readUntilLength(SocketChannel channel, int length
+    public void readUntilLength(SocketChannel channel, int length
             ,IOExceptionConsumer<byte[]> onRead, Consumer<Exception> exHandler) {
-        ReadLengthMeta meta = new ReadLengthMeta();
-        meta.channel = channel;
-        meta.buf = ByteBuffer.allocate(length);
-        meta.onRead = onRead;
-        meta.exHandler = exHandler;
-        
-        read(meta);
+        registerQueue.add(()->{
+            ReadLengthMeta meta = new ReadLengthMeta();
+            meta.channel = channel;
+            meta.buf = ByteBuffer.allocate(length);
+            meta.onRead = onRead;
+            meta.exHandler = exHandler;
+            
+            read(meta);
+        });
+        selector.wakeup();
+    }
+    /**
+     * 读任意长度（不能为0且最多不超过max），读到后回调onRead
+     * @param channel
+     * @param buf 复用的buf，使用前会被clear，因此调用前请确保数据已被使用完
+     * @param onRead 该函数处理时应默认buf参数为读模式<br>
+     * 　　该buf即为本方法传入的参数buf<br>
+     * 　　ChannelReacher不会再使用buf，因此回调函数可以任意处理
+     * @param exHandler
+     */
+    public void readAny(SocketChannel channel, ByteBuffer buf
+            ,IOExceptionConsumer<ByteBuffer> onRead, Consumer<Exception> exHandler) {
+        registerQueue.add(()->{
+            ReadAnyMeta meta = new ReadAnyMeta();
+            meta.channel = channel;
+            buf.clear();
+            meta.buf = buf;
+            meta.onRead = onRead;
+            meta.exHandler = exHandler;
+            
+            read(meta);
+        });
+        selector.wakeup();
+    }
+    /**
+     * 读任意长度（不能为0且最多不超过max），读到后回调onRead
+     * @param channel
+     * @param bufSize 缓冲大小
+     * @param onRead 该函数处理时应默认buf参数为读模式<br>
+     * 　　ChannelReacher不会再使用buf，因此回调函数可以任意处理
+     * @param exHandler
+     * @see #readAny(SocketChannel, ByteBuffer, IOExceptionConsumer, Consumer)
+     */
+    public void readAny(SocketChannel channel, int bufSize
+            ,IOExceptionConsumer<ByteBuffer> onRead, Consumer<Exception> exHandler) {
+        readAny(channel, ByteBuffer.allocate(bufSize), onRead, exHandler);
     }
     private void read(ReadMeta meta) {
-        selector.wakeup();
-        
         try{
-            selector.selectNow(); //连续读时，key.cancel和register会发生在同一线程，不重新执行下select清理下会报cancelledKey异常
             meta.channel.register(selector, OP_READ, meta);
         }catch(Exception e){
             meta.exHandler.accept(e);
         }
     }
     
-    @Override
+    @Override @SneakyThrows
     public void run() {
         while(selector.isOpen()){
-            try{
-                selector.select();
-            }catch(Exception e){
-                log.error("channel reader select err", e);
-                return;
-            }
-            if(!selector.isOpen()) return;
-            synchronized(this) {
-                //等待可能的transmit 注册
-            }
+            selector.select();
             Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
+            while(!registerQueue.isEmpty()) registerQueue.remove(0).run();
+            if(!selector.isOpen()) return;
             while(keys.hasNext()){
                 SelectionKey key = keys.next();
                 keys.remove();
@@ -116,7 +170,7 @@ public class ChannelReader extends Thread {
             int size = meta.channel.read(meta.buf);
             if(size==0) return;
             if(size<0){
-                meta.exHandler.accept(new IOException("end-of-stream"));
+                meta.exHandler.accept(new EOFException("end-of-stream"));
                 return;
             }
             meta.read(key);
@@ -151,21 +205,19 @@ public class ChannelReader extends Thread {
     
     /** 读到特定字节则结束 */
     private class ReadUntitSpecifyByteMeta extends ReadMeta {
-        protected byte specifyByte;
+        private byte specifyByte;
         
         private ByteArrayOutputStream readed;
         private IOExceptionConsumer<byte[]> onRead;
         
         @Override
         protected void read(SelectionKey key) throws IOException {
-            //buf2readed and get last byte
             buf.flip();
-            readed.write(buf.array(), 0, buf.limit());
-            byte lastByte = buf.array()[buf.limit()-1];
-            buf.flip();
+            byte b = buf.get();
+            readed.write(b);
             buf.clear();
             
-            if(specifyByte!=lastByte) return;
+            if(specifyByte!=b) return;
             key.cancel();
             onRead.accept(readed.toByteArray());
         }
@@ -181,6 +233,18 @@ public class ChannelReader extends Thread {
             key.cancel();
             buf.flip();
             onRead.accept(buf.array());
+        }
+    }
+    
+    /** 读任意长度（不能为0），则结束 */
+    private class ReadAnyMeta extends ReadMeta {
+        private IOExceptionConsumer<ByteBuffer> onRead;
+        
+        @Override
+        protected void read(SelectionKey key) throws IOException {
+            key.cancel();
+            buf.flip();
+            onRead.accept(buf);
         }
     }
     

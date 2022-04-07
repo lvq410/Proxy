@@ -1,8 +1,8 @@
 package com.lvt4j.socketproxy;
 
 import static com.lvt4j.socketproxy.ProxyApp.format;
+import static com.lvt4j.socketproxy.ProxyApp.isCloseException;
 import static com.lvt4j.socketproxy.ProxyApp.port;
-import static java.nio.channels.SelectionKey.OP_ACCEPT;
 import static java.util.stream.Collectors.groupingBy;
 import static java.util.stream.Collectors.mapping;
 import static java.util.stream.Collectors.toList;
@@ -13,14 +13,11 @@ import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.nio.channels.SelectionKey;
-import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -39,7 +36,6 @@ import org.springframework.stereotype.Service;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.primitives.Shorts;
 
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -51,7 +47,7 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 @Service
-public class Socks5Service extends Thread implements InfoContributor {
+public class Socks5Service implements InfoContributor {
 
     private static class Msg {
         private static final byte[] NoAcc = {5, -1};
@@ -70,52 +66,27 @@ public class Socks5Service extends Thread implements InfoContributor {
     @Autowired
     private ChannelWriter writer;
     @Autowired
+    private ChannelAcceptor acceptor;
+    @Autowired
     private ChannelConnector connector;
-    
-    private Selector acceptor;
     
     private Map<Integer, ServerMeta> servers = new HashMap<>();
     
     @PostConstruct
     private void init() throws IOException {
-        setName("Socks5Service");
-        acceptor = Selector.open();
-        
         Config.changeCallback_socks5 = this::reloadConfig;
         
         reloadConfig();
-        start();
     }
     private synchronized void reloadConfig() {
         Set<Integer> socks5 = config.getSocks5();
         for(int port : socks5){
-            ServerMeta meta = servers.get(port);
-            if(meta!=null) continue;
-            
-            meta = new ServerMeta();
-            
-            ServerSocketChannel serverSocketChannel = null;
+            if(servers.containsKey(port)) continue;
             try{
-                serverSocketChannel = ServerSocketChannel.open();
-                serverSocketChannel.bind(new InetSocketAddress(port));
-                serverSocketChannel.configureBlocking(false);
-                
-                meta.port = port;
-                meta.serverSocketChannel = serverSocketChannel;
-                meta.src2target = new ChannelTransmitter(port+" s->t");
-                meta.target2src = new ChannelTransmitter(port+" t->s");
-                
-                synchronized(this){
-                    acceptor.wakeup();
-                    serverSocketChannel.register(acceptor, OP_ACCEPT, meta);
-                }
-                
-                servers.put(port, meta);
-                
+                servers.put(port, new ServerMeta(port));
                 log.info("{} socks5代理启动", port);
             }catch(Exception e){
                 log.error("{} socks5代理启动失败", port, e);
-                ProxyApp.close(serverSocketChannel);
             }
         }
         ImmutableSet.copyOf(servers.keySet()).stream().filter(p->!socks5.contains(p)).forEach(removed->{
@@ -127,7 +98,6 @@ public class Socks5Service extends Thread implements InfoContributor {
     private synchronized void destory() throws IOException {
         Config.changeCallback_socks5 = null;
         ImmutableSet.copyOf(servers.values()).forEach(ServerMeta::destory);
-        acceptor.close();
     }
     
     @Scheduled(cron="0/10 * * * * ?")
@@ -140,49 +110,6 @@ public class Socks5Service extends Thread implements InfoContributor {
         builder.withDetail("socks5", servers.values().stream().collect(toMap(s->s.port, s->s.info())));
     }
     
-    @Override
-    public void run() {
-        while(acceptor.isOpen()){
-            try{
-                acceptor.select();
-            }catch(Exception e){
-                log.error("acceptor select err", e);
-                return;
-            }
-            if(!acceptor.isOpen()) return;
-            synchronized(this){
-                //等待可能的注册
-            }
-            Iterator<SelectionKey> keys = acceptor.selectedKeys().iterator();
-            while(keys.hasNext()){
-                SelectionKey key = keys.next();
-                keys.remove();
-                ServerMeta serverMeta = (ServerMeta) key.attachment();
-                try{
-                    accept(key, serverMeta);
-                }catch(Exception e){
-                    log.error("establish connection err", e);
-                }
-            }
-        }
-    }
-    private void accept(SelectionKey key, ServerMeta serverMeta) throws IOException {
-        SocketChannel src = ((ServerSocketChannel)key.channel()).accept();
-        src.configureBlocking(false);
-        
-        ServerMeta.ConnectMeta connect = serverMeta.new ConnectMeta(src);
-        
-        connect.targetStr = "initializing";
-        connect.direction = String.format("%s->%s->%s->%s"
-            ,format(src.getRemoteAddress()), port(src.getLocalAddress())
-            ,"initializing" ,"initializing");
-        
-        if(log.isTraceEnabled()) log.trace("{} connecting {}", serverMeta.port, connect.direction);
-        
-        serverMeta.connections.add(connect);
-        
-        connect.handshake();
-    }
     
     private class ServerMeta {
         
@@ -194,9 +121,29 @@ public class Socks5Service extends Thread implements InfoContributor {
         
         private List<ConnectMeta> connections = Collections.synchronizedList(new LinkedList<>());
         
+        public ServerMeta(int port) throws IOException {
+            this.port = port;
+            
+            try{
+                serverSocketChannel = ProxyApp.server(port);
+                
+                src2target = new ChannelTransmitter(port+" s->t");
+                target2src = new ChannelTransmitter(port+" t->s");
+                
+                acceptor.accept(serverSocketChannel, this::accept, e->log.error("establish connection err", e));
+            }catch(Exception e){
+                destory();
+                throw e;
+            }
+        }
+        private void accept(SocketChannel src) throws IOException {
+            connections.add(new ConnectMeta(src));
+        }
+        
         public void destory() {
             ImmutableSet.copyOf(connections).forEach(ConnectMeta::destory);
-            src2target.destory(); target2src.destory();
+            if(src2target!=null) src2target.destory();
+            if(target2src!=null) target2src.destory();
             ProxyApp.close(serverSocketChannel);
             servers.remove(port);
             log.info("{} socks5代理停止", port);
@@ -215,7 +162,6 @@ public class Socks5Service extends Thread implements InfoContributor {
             return connections.stream().collect(groupingBy(c->c.targetStr, mapping(c->c.direction, toList())));
         }
         
-        @RequiredArgsConstructor
         private class ConnectMeta {
             private final SocketChannel src;
             
@@ -227,6 +173,27 @@ public class Socks5Service extends Thread implements InfoContributor {
             private String direction;
             
             private long latestTouchTime = System.currentTimeMillis();
+            
+            public ConnectMeta(SocketChannel src) throws IOException {
+                this.src = src;
+                
+                try{
+                    src.configureBlocking(false);
+                    
+                    targetStr = "initializing";
+                    direction = String.format("%s->%s->%s->%s"
+                            ,format(src.getRemoteAddress()), port(src.getLocalAddress())
+                            ,"initializing" ,"initializing");
+                    
+                    if(log.isTraceEnabled()) log.trace("{} connecting {}", port, direction);
+                    
+                    handshake();
+                }catch(IOException e){
+                    destory();
+                    throw e;
+                }
+                
+            }
             
             /**
              * 握手阶段：获取认证方法 并 响应是否进入认证阶段，或无需认证跳过认证阶段
@@ -374,7 +341,7 @@ public class Socks5Service extends Thread implements InfoContributor {
                     target.configureBlocking(false);
                     target.connect(new InetSocketAddress(targetHost, targetPort));
                     
-                    connector.connectListen(target, this::target_finish, e->{
+                    connector.connect(target, this::target_finish, e->{
                         writer.write(src, Msg.Fail, ()->onException(e), this::onException);
                     });
                 }, this::onException);
@@ -397,7 +364,7 @@ public class Socks5Service extends Thread implements InfoContributor {
             }
             
             private synchronized void onException(Exception e) {
-                log.error("connection {} err", direction, e);
+                if(!isCloseException(e)) log.error("connection {} err", direction, e);
                 destory();
             }
             

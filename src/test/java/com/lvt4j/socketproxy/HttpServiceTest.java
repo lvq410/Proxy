@@ -28,11 +28,12 @@ public class HttpServiceTest extends BaseTest {
     
     private int port;
     
-    private HttpNioService service;
+    private HttpService service;
     
     private Config config;
     private ChannelReader reader;
     private ChannelWriter writer;
+    private ChannelAcceptor acceptor;
     private ChannelConnector connector;
     
     private Socket socket;
@@ -49,18 +50,20 @@ public class HttpServiceTest extends BaseTest {
     @Before
     public void before() throws Exception {
         port = availablePort();
-        service = new HttpNioService();
+        service = new HttpService();
         
         config = new Config();
         config.setHttp(ImmutableSet.of(port));
         
         reader = new ChannelReader(); invoke(reader, "init");
         writer = new ChannelWriter(); invoke(writer, "init");
+        acceptor = new ChannelAcceptor(); invoke(acceptor, "init");
         connector = new ChannelConnector(); invoke(connector, "init");
         
         FieldUtils.writeField(service, "config", config, true);
         FieldUtils.writeField(service, "reader", reader, true);
         FieldUtils.writeField(service, "writer", writer, true);
+        FieldUtils.writeField(service, "acceptor", acceptor, true);
         FieldUtils.writeField(service, "connector", connector, true);
         
         invoke(service, "init");
@@ -77,6 +80,7 @@ public class HttpServiceTest extends BaseTest {
     public void after() throws IOException {
         if(reader!=null) invoke(reader, "destory");
         if(writer!=null) invoke(writer, "destory");
+        if(acceptor!=null) invoke(acceptor, "destory");
         if(connector!=null) invoke(connector, "destory");
         if(service!=null) invoke(service, "destory");
         

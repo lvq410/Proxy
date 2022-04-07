@@ -2,15 +2,21 @@ package com.lvt4j.socketproxy;
 
 import static java.nio.channels.SelectionKey.OP_READ;
 import static java.nio.channels.SelectionKey.OP_WRITE;
+import static java.util.Collections.synchronizedList;
 
 import java.io.IOException;
+import java.lang.Thread.UncaughtExceptionHandler;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedSelectorException;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
 import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
 import java.util.function.Consumer;
 
+import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -18,48 +24,50 @@ import lombok.extern.slf4j.Slf4j;
  * @author LV on 2022年4月2日
  */
 @Slf4j
-public class ChannelTransmitter extends Thread {
+public class ChannelTransmitter extends Thread implements UncaughtExceptionHandler {
 
     private Selector selector;
+    
+    /** 待注册队列 */
+    private List<Runnable> registerQueue = synchronizedList(new LinkedList<>());
     
     public ChannelTransmitter(String name) throws IOException {
         super(name);
         selector = Selector.open();
         start();
     }
-    
-    public synchronized void transmit(SocketChannel from, SocketChannel to, int buffSize,
-            Runnable onTrans, Consumer<Exception> exHandler) {
-        Arrow arrow = new Arrow();
-        arrow.from = from;
-        arrow.to = to;
-        arrow.buf = ByteBuffer.allocate(buffSize);
-        arrow.onTrans = onTrans;
-        arrow.exHandler = exHandler;
-        
-        selector.wakeup();
-        
-        try{
-            selector.selectNow(); //防止连续写时报CancelledKey异常
-            from.register(selector, OP_READ, arrow);
-        }catch(Exception e){
-            exHandler.accept(e);
-        }
+    @Override
+    public void uncaughtException(Thread t, Throwable e) {
+        if(e instanceof ClosedSelectorException) return;
+        log.error("channel trans err", e);
     }
     
+    public void transmit(SocketChannel from, SocketChannel to, int buffSize,
+            Runnable onTrans, Consumer<Exception> exHandler) {
+        registerQueue.add(()->{
+            Arrow arrow = new Arrow();
+            arrow.from = from;
+            arrow.to = to;
+            arrow.buf = ByteBuffer.allocate(buffSize);
+            arrow.onTrans = onTrans;
+            arrow.exHandler = exHandler;
+            
+            try{
+                from.register(selector, OP_READ, arrow);
+            }catch(Exception e){
+                exHandler.accept(e);
+            }
+        });
+        selector.wakeup();
+    }
+    
+    @Override @SneakyThrows
     public void run() {
         while(selector.isOpen()){
-            try{
-                selector.select();
-            }catch(Exception e){
-                log.error("channel trans select err", e);
-                return;
-            }
-            if(!selector.isOpen()) return;
-            synchronized(this) {
-                //等待可能的transmit 注册
-            }
+            selector.select();
             Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
+            while(!registerQueue.isEmpty()) registerQueue.remove(0).run();
+            if(!selector.isOpen()) return;
             while(keys.hasNext()){
                 SelectionKey key = keys.next();
                 keys.remove();
@@ -84,7 +92,7 @@ public class ChannelTransmitter extends Thread {
                     arrow.onTrans.run();
                 }
                 if(!arrow.buf.hasRemaining()){
-                    arrow.buf.flip();
+                    arrow.buf.clear();
                     key.cancel();
                     arrow.from.register(selector, OP_READ, arrow);
                 }

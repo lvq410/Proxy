@@ -28,6 +28,7 @@ public class TcpServiceTest extends BaseTest {
     private TcpService service;
     
     private Config config;
+    private ChannelAcceptor acceptor;
     private ChannelConnector connector;
     
     private Socket socket;
@@ -47,9 +48,11 @@ public class TcpServiceTest extends BaseTest {
         config = new Config();
         config.setTcp(ImmutableMap.of(port, "127.0.0.1:"+serverPort));
         
+        acceptor = new ChannelAcceptor(); invoke(acceptor, "init");
         connector = new ChannelConnector(); invoke(connector, "init");
         
         FieldUtils.writeField(service, "config", config, true);
+        FieldUtils.writeField(service, "acceptor", acceptor, true);
         FieldUtils.writeField(service, "connector", connector, true);
         
         invoke(service, "init");
@@ -63,6 +66,7 @@ public class TcpServiceTest extends BaseTest {
     
     @After
     public void after() throws IOException {
+        if(acceptor!=null) invoke(acceptor, "destory");
         if(connector!=null) invoke(connector, "destory");
         if(service!=null) invoke(service, "destory");
         

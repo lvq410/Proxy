@@ -1,6 +1,6 @@
 package com.lvt4j.socketproxy;
 
-import static java.nio.channels.SelectionKey.OP_CONNECT;
+import static java.nio.channels.SelectionKey.OP_ACCEPT;
 import static java.util.Collections.synchronizedList;
 
 import java.io.IOException;
@@ -8,6 +8,7 @@ import java.lang.Thread.UncaughtExceptionHandler;
 import java.nio.channels.ClosedSelectorException;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
+import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -19,27 +20,26 @@ import javax.annotation.PreDestroy;
 
 import org.springframework.stereotype.Service;
 
-import com.lvt4j.socketproxy.ProxyApp.IOExceptionRunnable;
+import com.lvt4j.socketproxy.ProxyApp.IOExceptionConsumer;
 
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 
 /**
  *
- * @author LV on 2022年4月2日
+ * @author LV on 2022年4月3日
  */
 @Slf4j
 @Service
-public class ChannelConnector extends Thread implements UncaughtExceptionHandler {
+public class ChannelAcceptor extends Thread implements UncaughtExceptionHandler {
 
     private Selector selector;
-    
     /** 待注册队列 */
     private List<Runnable> registerQueue = synchronizedList(new LinkedList<>());
     
     @PostConstruct
     public void init() throws IOException {
-        init("ChannelConnector");
+        init("ChannelAcceptor");
     }
     public void init(String name) throws IOException {
         setName(name);
@@ -52,25 +52,26 @@ public class ChannelConnector extends Thread implements UncaughtExceptionHandler
         try{
             selector.close();
         }catch(Exception e){
-            log.error("channel connector close err", e);
+            log.error("channel acceptor close err", e);
         }
     }
     @Override
     public void uncaughtException(Thread t, Throwable e) {
         if(e instanceof ClosedSelectorException) return;
-        log.error("channel connector err", e);
+        log.error("channel acceptor err", e);
     }
     
-    public void connect(SocketChannel channel, IOExceptionRunnable onConnect, Consumer<Exception> exHandler) {
+    public void accept(ServerSocketChannel channel, IOExceptionConsumer<SocketChannel> onAccept, Consumer<Exception> exHandler) {
         registerQueue.add(()->{
-            ConnectMeta cnn = new ConnectMeta();
-            cnn.onConnect = onConnect;
-            cnn.exHandler = exHandler;
+            AcceptMeta meta = new AcceptMeta();
+            meta.channel = channel;
+            meta.onAccept = onAccept;
+            meta.exHandler = exHandler;
             
             try{
-                channel.register(selector, OP_CONNECT, cnn);
+                meta.channel.register(selector, OP_ACCEPT, meta);
             }catch(Exception e){
-                exHandler.accept(e);
+                meta.exHandler.accept(e);
             }
         });
         selector.wakeup();
@@ -86,25 +87,25 @@ public class ChannelConnector extends Thread implements UncaughtExceptionHandler
             while(keys.hasNext()){
                 SelectionKey key = keys.next();
                 keys.remove();
-                connect(key);
-                key.cancel();
+                accept(key);
             }
         }
     }
-    private void connect(SelectionKey key) {
-        ConnectMeta cnn = (ConnectMeta) key.attachment();
+    private void accept(SelectionKey key) {
+        AcceptMeta meta = (AcceptMeta) key.attachment();
         try{
-            if(!key.isConnectable()) return;
-            SocketChannel channel = (SocketChannel)key.channel();
-            channel.finishConnect();
-            cnn.onConnect.run();
+            if(!key.isAcceptable()) return;
+            SocketChannel channel = meta.channel.accept();
+            meta.onAccept.accept(channel);
         }catch(Exception e){
-            cnn.exHandler.accept(e);
+            meta.exHandler.accept(e);
         }
     }
-
-    private class ConnectMeta {
-        private IOExceptionRunnable onConnect;
+    
+    private class AcceptMeta {
+        private ServerSocketChannel channel;
+        
+        private IOExceptionConsumer<SocketChannel> onAccept;
         private Consumer<Exception> exHandler;
     }
     

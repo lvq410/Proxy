@@ -1,13 +1,17 @@
 package com.lvt4j.socketproxy;
 
+import static java.util.Collections.emptyList;
 import static java.util.Collections.emptySet;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import javax.annotation.PreDestroy;
 
+import org.apache.commons.lang3.Validate;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.cloud.context.config.annotation.RefreshScope;
 import org.springframework.context.annotation.Configuration;
@@ -30,17 +34,19 @@ public class Config {
     public static Runnable changeCallback_tcp;
     public static Runnable changeCallback_socks5;
     public static Runnable changeCallback_http;
+    public static Runnable changeCallback_intranet;
     
     @Setter@Getter
     private long maxIdleTime;
     
     @Getter
     private Map<Integer, HostAndPort> tcp;
-    
     @Getter@Setter
     private Set<Integer> socks5 = emptySet();
     @Getter@Setter
     private Set<Integer> http = emptySet();
+    @Getter
+    private List<IntranetConfig> intranet = emptyList();
     
     public void setTcp(Map<Integer, String> proxy) {
         Map<Integer, HostAndPort> tcp = new HashMap<>();
@@ -53,6 +59,25 @@ public class Config {
         this.tcp = tcp;
     }
     
+    public void setIntranet(List<IntranetConfig> intranet) {
+        List<IntranetConfig> cs = new ArrayList<>(intranet.size());
+        for(IntranetConfig c : intranet){
+            switch(c.getType()){
+            case Entry:
+                Validate.notNull(c.port, "intranet entry 服务 port配置不能为空");
+                Validate.notNull(c.relay, "intranet entry 服务 relay配置不能为空");
+                cs.add(c);
+                break;
+            case Relay:
+                Validate.notNull(c.entry, "intranet entry 服务 entry配置不能为空");
+                Validate.notNull(c.target, "intranet entry 服务 entry配置不能为空");
+                cs.add(c);
+                break;
+            }
+        }
+        this.intranet = cs;
+    }
+    
     @PreDestroy
     private void destory() {
         new Thread(()->{
@@ -62,6 +87,7 @@ public class Config {
             if(changeCallback_tcp!=null) changeCallback_tcp.run();
             if(changeCallback_socks5!=null) changeCallback_socks5.run();
             if(changeCallback_http!=null) changeCallback_http.run();
+            if(changeCallback_intranet!=null) changeCallback_intranet.run();
         }).start();
     }
     
@@ -70,22 +96,33 @@ public class Config {
      * @author LV on 2022年3月28日
      */
     @Data
-    static class IntranetConfig {
+    public static class IntranetConfig {
         
         public Type type;
-        public int port;
-        public Integer relayListernPort;
+        
+        /** 入口服务配置，通过本端口接收客户端请求 */
+        public Integer port;
+        /** 入口服务配置，转发服务通过本端口与入口服务建立连接 */
+        public Integer relay;
+        
+        /** 转发服务配置，入口服务地址 */
         public HostAndPort entry;
+        /** 转发服务配置，目标服务地址 */
         public HostAndPort target;
         
+        public void setEntry(String entry) {
+            this.entry = ProxyApp.validHostPort(entry);
+            Validate.notNull(this.entry, "非法的地址:%s", entry);
+        }
+        public void setTarget(String target) {
+            this.target = ProxyApp.validHostPort(target);
+            Validate.notNull(this.target, "非法的地址:%s", target);
+        }
+        
         public enum Type {
-            /**
-             * 入口服务
-             */
+            /** 入口服务 */
             Entry
-            /**
-             * 转发服务
-             */
+            /** 转发服务 */
             ,Relay
             ;
         }
