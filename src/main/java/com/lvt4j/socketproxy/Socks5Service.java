@@ -4,9 +4,9 @@ import static com.lvt4j.socketproxy.ProxyApp.format;
 import static com.lvt4j.socketproxy.ProxyApp.isCloseException;
 import static com.lvt4j.socketproxy.ProxyApp.port;
 import static java.util.stream.Collectors.groupingBy;
+import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.mapping;
 import static java.util.stream.Collectors.toList;
-import static java.util.stream.Collectors.toMap;
 
 import java.io.IOException;
 import java.net.Inet4Address;
@@ -21,12 +21,14 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.Objects;
+import java.util.TreeMap;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
 
 import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.info.Info.Builder;
 import org.springframework.boot.actuate.info.InfoContributor;
@@ -79,7 +81,11 @@ public class Socks5Service implements InfoContributor {
         reloadConfig();
     }
     private synchronized void reloadConfig() {
-        Set<Integer> socks5 = config.getSocks5();
+        List<Integer> socks5 = config.getSocks5();
+        ImmutableSet.copyOf(servers.keySet()).stream().filter(p->!socks5.contains(p)).forEach(removed->{
+            ServerMeta s = servers.remove(removed);
+            if(s!=null) s.destory();
+        });
         for(int port : socks5){
             if(servers.containsKey(port)) continue;
             try{
@@ -89,10 +95,6 @@ public class Socks5Service implements InfoContributor {
                 log.error("{} socks5代理启动失败", port, e);
             }
         }
-        ImmutableSet.copyOf(servers.keySet()).stream().filter(p->!socks5.contains(p)).forEach(removed->{
-            ServerMeta s = servers.remove(removed);
-            if(s!=null) s.destory();
-        });
     }
     @PreDestroy
     private synchronized void destory() throws IOException {
@@ -107,7 +109,9 @@ public class Socks5Service implements InfoContributor {
     
     @Override
     public void contribute(Builder builder) {
-        builder.withDetail("socks5", servers.values().stream().collect(toMap(s->s.port, s->s.info())));
+        if(servers.isEmpty()) return;
+        builder.withDetail("socks5", config.getSocks5().stream().map(servers::get).filter(Objects::nonNull)
+            .map(ServerMeta::info).collect(joining("\n")));
     }
     
     
@@ -158,8 +162,15 @@ public class Socks5Service implements InfoContributor {
             }
         }
 
-        public Object info() {
-            return connections.stream().collect(groupingBy(c->c.targetStr, mapping(c->c.direction, toList())));
+        public String info() {
+            List<Object> infos = new LinkedList<>();
+            infos.add(port);
+            connections.stream().collect(groupingBy(c->c.targetStr, TreeMap::new, mapping(c->c.direction, toList())))
+            .forEach((t, cs)->{
+                infos.add("  "+t);
+                cs.forEach(cnn->infos.add("  - "+cnn));
+            });
+            return StringUtils.join(infos, "\n");
         }
         
         private class ConnectMeta {

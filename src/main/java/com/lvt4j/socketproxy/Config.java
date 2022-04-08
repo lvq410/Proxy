@@ -2,11 +2,9 @@ package com.lvt4j.socketproxy;
 
 import static com.lvt4j.socketproxy.ProxyApp.format;
 import static java.util.Collections.emptyList;
-import static java.util.Collections.emptySet;
 
 import java.net.InetAddress;
 import java.util.List;
-import java.util.Set;
 
 import javax.annotation.PreDestroy;
 
@@ -41,9 +39,9 @@ public class Config {
     @Getter
     private List<TcpConfig> tcp = emptyList();
     @Getter@Setter
-    private Set<Integer> socks5 = emptySet();
+    private List<Integer> socks5 = emptyList();
     @Getter@Setter
-    private Set<Integer> http = emptySet();
+    private List<Integer> http = emptyList();
     @Getter
     private List<IntranetConfig> intranet = emptyList();
     

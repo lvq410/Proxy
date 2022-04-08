@@ -7,16 +7,14 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import org.apache.commons.lang3.reflect.FieldUtils;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
-
-import com.google.common.collect.ImmutableSet;
 
 /**
  *
@@ -53,7 +51,7 @@ public class HttpServiceTest extends BaseTest {
         service = new HttpService();
         
         config = new Config();
-        config.setHttp(ImmutableSet.of(port));
+        config.setHttp(Arrays.asList(port));
         
         reader = new ChannelReader(); invoke(reader, "init");
         writer = new ChannelWriter(); invoke(writer, "init");
@@ -93,14 +91,14 @@ public class HttpServiceTest extends BaseTest {
     @Test(timeout=60000)
     @SuppressWarnings("unchecked")
     public void reload() throws Exception {
-        Set<Integer> http = ImmutableSet.of(port, availablePort());
+        List<Integer> http = Arrays.asList(port, availablePort());
         config.setHttp(http);
         invoke(service, "reloadConfig");
         Map<Integer, ?> servers = (Map<Integer, ?>) FieldUtils.readField(service, "servers", true);
         assertEquals(http.size(), servers.size());
         assertEquals(http, servers.keySet());
         
-        http = ImmutableSet.of(availablePort());
+        http = Arrays.asList(availablePort());
         config.setHttp(http);
         invoke(service, "reloadConfig");
         servers = (Map<Integer, ?>) FieldUtils.readField(service, "servers", true);

@@ -7,16 +7,15 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import org.apache.commons.lang3.reflect.FieldUtils;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
-import com.google.common.collect.ImmutableSet;
 import com.google.common.primitives.Shorts;
 
 /**
@@ -57,7 +56,7 @@ public class Socks5ServiceTest extends BaseTest {
         service = new Socks5Service();
         
         config = new Config();
-        config.setSocks5(ImmutableSet.of(port));
+        config.setSocks5(Arrays.asList(port));
         
         reader = new ChannelReader(); invoke(reader, "init");
         writer = new ChannelWriter(); invoke(writer, "init");
@@ -95,14 +94,14 @@ public class Socks5ServiceTest extends BaseTest {
     @Test(timeout=60000)
     @SuppressWarnings("unchecked")
     public void reload() throws Exception {
-        Set<Integer> socks5 = ImmutableSet.of(port, availablePort());
+        List<Integer> socks5 = Arrays.asList(port, availablePort());
         config.setSocks5(socks5);
         invoke(service, "reloadConfig");
         Map<Integer, ?> servers = (Map<Integer, ?>) FieldUtils.readField(service, "servers", true);
         assertEquals(socks5.size(), servers.size());
         assertEquals(socks5, servers.keySet());
         
-        socks5 = ImmutableSet.of(availablePort());
+        socks5 = Arrays.asList(availablePort());
         config.setSocks5(socks5);
         invoke(service, "reloadConfig");
         servers = (Map<Integer, ?>) FieldUtils.readField(service, "servers", true);

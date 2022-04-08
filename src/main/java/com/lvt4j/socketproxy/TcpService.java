@@ -4,9 +4,9 @@ import static com.lvt4j.socketproxy.ProxyApp.format;
 import static com.lvt4j.socketproxy.ProxyApp.isCloseException;
 import static com.lvt4j.socketproxy.ProxyApp.port;
 import static java.util.stream.Collectors.groupingBy;
+import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.mapping;
 import static java.util.stream.Collectors.toList;
-import static java.util.stream.Collectors.toMap;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -18,10 +18,13 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.TreeMap;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
 
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.info.Info.Builder;
 import org.springframework.boot.actuate.info.InfoContributor;
@@ -60,9 +63,12 @@ public class TcpService implements InfoContributor {
     
     private synchronized void reloadConfig() {
         List<TcpConfig> tcp = config.getTcp();
+        ImmutableSet.copyOf(servers.keySet()).stream().filter(k->!tcp.contains(k)).forEach(removed->{
+            ServerMeta s = servers.remove(removed);
+            if(s!=null) s.destory();
+        });
         for(TcpConfig c : tcp){
-            ServerMeta meta = servers.get(c);
-            if(meta!=null) continue;
+            if(servers.containsKey(c)) continue;
             try{
                 servers.put(c, new ServerMeta(c));
                 log.info("{} tcp代理启动,目标 {}", c.shortDirection(), c.getTarget());
@@ -70,10 +76,6 @@ public class TcpService implements InfoContributor {
                 log.error("{} tcp代理启动失败", c.shortDirection(), e);
             }
         }
-        ImmutableSet.copyOf(servers.keySet()).stream().filter(k->!tcp.contains(k)).forEach(removed->{
-            ServerMeta s = servers.remove(removed);
-            if(s!=null) s.destory();
-        });
     }
     
     @PreDestroy
@@ -89,7 +91,8 @@ public class TcpService implements InfoContributor {
     
     @Override
     public void contribute(Builder builder) {
-        builder.withDetail("tcp", servers.values().stream().collect(toMap(s->s.direction, s->s.info())));
+        builder.withDetail("tcp", config.getTcp().stream().map(servers::get).filter(Objects::nonNull)
+            .map(ServerMeta::info).collect(joining("\n")));
     }
     
     private class ServerMeta {
@@ -116,7 +119,6 @@ public class TcpService implements InfoContributor {
             this.direction = c.direction();
             
             try{
-                
                 serverSocketChannel = ProxyApp.server(host, port);
                 
                 src2target = new ChannelTransmitter(port+" s->t");
@@ -150,8 +152,15 @@ public class TcpService implements InfoContributor {
             }
         }
         
-        public Object info() {
-            return connections.stream().collect(groupingBy(c->c.targetConfig, mapping(c->c.direction, toList())));
+        public String info() {
+            List<Object> infos = new LinkedList<>();
+            infos.add(direction);
+            connections.stream().collect(groupingBy(c->c.targetConfig.toString(), TreeMap::new, mapping(c->c.direction, toList())))
+            .forEach((t, cs)->{
+                infos.add("  "+t);
+                cs.forEach(cnn->infos.add("  - "+cnn));
+            });
+            return StringUtils.join(infos, "\n");
         }
         
         private class ConnectMeta {

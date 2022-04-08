@@ -3,8 +3,7 @@ package com.lvt4j.socketproxy;
 import static com.lvt4j.socketproxy.ProxyApp.format;
 import static com.lvt4j.socketproxy.ProxyApp.isCloseException;
 import static com.lvt4j.socketproxy.ProxyApp.port;
-import static java.util.stream.Collectors.toList;
-import static java.util.stream.Collectors.toMap;
+import static java.util.stream.Collectors.joining;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -12,8 +11,10 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -21,6 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
 
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.info.Info.Builder;
 import org.springframework.boot.actuate.info.InfoContributor;
@@ -34,7 +36,6 @@ import com.google.common.primitives.Ints;
 import com.lvt4j.socketproxy.Config.IntranetConfig;
 
 import lombok.RequiredArgsConstructor;
-import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -66,6 +67,10 @@ public class IntranetService implements InfoContributor {
     }
     private synchronized void reloadConfig() {
         List<IntranetConfig> intranet = config.getIntranet();
+        ImmutableSet.copyOf(servers.keySet()).stream().filter(c->!intranet.contains(c)).forEach(removed->{
+            Server s = servers.remove(removed);
+            if(s!=null) s.destory();
+        });
         for(IntranetConfig c : intranet){
             if(servers.containsKey(c)) continue;
             switch(c.getType()){
@@ -87,10 +92,6 @@ public class IntranetService implements InfoContributor {
                 break;
             }
         }
-        ImmutableSet.copyOf(servers.keySet()).stream().filter(c->!intranet.contains(c)).forEach(removed->{
-            Server s = servers.remove(removed);
-            if(s!=null) s.destory();
-        });
     }
     @PreDestroy
     private synchronized void destory() {
@@ -110,12 +111,10 @@ public class IntranetService implements InfoContributor {
     @Override
     public void contribute(Builder builder) {
         builder.withDetail("intranet", ImmutableMap.of(
-            "entry", servers.values().stream()
-                .filter(s->s instanceof EntryServer).map(EntryServer.class::cast)
-                .collect(toMap(s->s.direction, s->s.info()))
-            ,"relay", servers.values().stream()
-                .filter(s->s instanceof RelayServer).map(RelayServer.class::cast)
-                .collect(toMap(s->s.direction, s->s.info()))
+            "entry", "\n"+config.getIntranet().stream().filter(c->IntranetConfig.Type.Entry==c.getType()).map(servers::get).filter(Objects::nonNull)
+                .map(Server::info).collect(joining("\n"))
+            ,"relay", "\n"+config.getIntranet().stream().filter(c->IntranetConfig.Type.Relay==c.getType()).map(servers::get).filter(Objects::nonNull)
+                .map(Server::info).collect(joining("\n"))
             ));
     }
 
@@ -258,8 +257,11 @@ public class IntranetService implements InfoContributor {
             }
         }
         
-        public Object info() {
-            return connections.values().stream().map(c->c.id+": "+c.direction).collect(toList());
+        public String info() {
+            List<Object> infos = new LinkedList<>();
+            infos.add("  "+direction);
+            connections.values().stream().sorted((c1,c2)->Integer.compare(c1.id, c2.id)).forEach(c->infos.add("  - "+c.id+": "+c.direction));
+            return StringUtils.join(infos, "\n");
         }
         
         @RequiredArgsConstructor
@@ -472,9 +474,11 @@ public class IntranetService implements InfoContributor {
             }
         }
         
-        @SneakyThrows
-        public Object info() {
-            return connections.values().stream().map(c->c.id+": "+c.direction).collect(toList());
+        public String info() {
+            List<Object> infos = new LinkedList<>();
+            infos.add("  "+direction);
+            connections.values().stream().sorted((c1,c2)->Integer.compare(c1.id, c2.id)).forEach(c->infos.add("  - "+c.id+": "+c.direction));
+            return StringUtils.join(infos, "\n");
         }
         
         private class ConnectMeta {
@@ -548,7 +552,7 @@ public class IntranetService implements InfoContributor {
     private interface Server {
         public void heartbeat();
         public void cleanIdle();
-        public Object info();
+        public String info();
         public void destory();
     }
     
