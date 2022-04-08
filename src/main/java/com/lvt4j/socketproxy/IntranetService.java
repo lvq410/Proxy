@@ -15,6 +15,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -29,7 +30,6 @@ import org.springframework.boot.actuate.info.InfoContributor;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.net.HostAndPort;
 import com.google.common.primitives.Ints;
@@ -111,15 +111,16 @@ public class IntranetService implements InfoContributor {
     @Override
     public void contribute(Builder builder) {
         if(servers.isEmpty()) return;
+        Map<String, String> infos = new TreeMap<>();
         String entryInfo = config.getIntranet().stream().filter(c->IntranetConfig.Type.Entry==c.getType())
             .map(servers::get).filter(Objects::nonNull)
             .map(Server::info).collect(joining("\n"));
-        if(StringUtils.isNotBlank(entryInfo)) entryInfo = "\n"+entryInfo;
+        if(StringUtils.isNotBlank(entryInfo)) infos.put("entry", "\n"+entryInfo);
         String relayInfo = config.getIntranet().stream().filter(c->IntranetConfig.Type.Relay==c.getType())
             .map(servers::get).filter(Objects::nonNull)
             .map(Server::info).collect(joining("\n"));
-        if(StringUtils.isNotBlank(relayInfo)) relayInfo = "\n"+relayInfo;
-        builder.withDetail("intranet", ImmutableMap.of("entry", entryInfo, "relay", relayInfo));
+        if(StringUtils.isNotBlank(relayInfo)) infos.put("relay", "\n"+relayInfo);
+        builder.withDetail("intranet", infos);
     }
 
     private class EntryServer implements Server {
