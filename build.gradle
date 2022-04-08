@@ -35,6 +35,9 @@ dependencyManagement {
 jar {
     enabled=true
 }
+bootJar {
+    baseName = 'proxy'
+}
 
 gitProperties {
     extProperty = 'gitProps'
