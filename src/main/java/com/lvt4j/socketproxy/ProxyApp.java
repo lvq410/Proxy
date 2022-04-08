@@ -77,7 +77,8 @@ public class ProxyApp {
         if(e instanceof ClosedChannelException) return true;
         if(e instanceof AsynchronousCloseException) return true;
         if(e instanceof IOException){
-            if(StringUtils.containsAny(e.getMessage(), "Connection reset by peer", "件中止了一个已建立的连接")){
+            if(StringUtils.containsAny(e.getMessage(),
+                    "Connection reset by peer", "中止了一个已建立的连接")){
                 return true;
             }
         }
