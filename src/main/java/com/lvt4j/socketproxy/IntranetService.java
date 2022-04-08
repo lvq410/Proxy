@@ -110,12 +110,16 @@ public class IntranetService implements InfoContributor {
     
     @Override
     public void contribute(Builder builder) {
-        builder.withDetail("intranet", ImmutableMap.of(
-            "entry", "\n"+config.getIntranet().stream().filter(c->IntranetConfig.Type.Entry==c.getType()).map(servers::get).filter(Objects::nonNull)
-                .map(Server::info).collect(joining("\n"))
-            ,"relay", "\n"+config.getIntranet().stream().filter(c->IntranetConfig.Type.Relay==c.getType()).map(servers::get).filter(Objects::nonNull)
-                .map(Server::info).collect(joining("\n"))
-            ));
+        if(servers.isEmpty()) return;
+        String entryInfo = config.getIntranet().stream().filter(c->IntranetConfig.Type.Entry==c.getType())
+            .map(servers::get).filter(Objects::nonNull)
+            .map(Server::info).collect(joining("\n"));
+        if(StringUtils.isNotBlank(entryInfo)) entryInfo = "\n"+entryInfo;
+        String relayInfo = config.getIntranet().stream().filter(c->IntranetConfig.Type.Relay==c.getType())
+            .map(servers::get).filter(Objects::nonNull)
+            .map(Server::info).collect(joining("\n"));
+        if(StringUtils.isNotBlank(relayInfo)) relayInfo = "\n"+relayInfo;
+        builder.withDetail("intranet", ImmutableMap.of("entry", entryInfo, "relay", relayInfo));
     }
 
     private class EntryServer implements Server {
