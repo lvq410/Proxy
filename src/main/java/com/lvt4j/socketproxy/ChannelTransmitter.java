@@ -4,6 +4,7 @@ import static java.nio.channels.SelectionKey.OP_READ;
 import static java.nio.channels.SelectionKey.OP_WRITE;
 import static java.util.Collections.synchronizedList;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.lang.Thread.UncaughtExceptionHandler;
 import java.nio.ByteBuffer;
@@ -86,6 +87,9 @@ public class ChannelTransmitter extends Thread implements UncaughtExceptionHandl
                     arrow.buf.flip();
                     key.cancel();
                     arrow.to.register(selector, OP_WRITE, arrow);
+                }else if(size==-1){
+                    key.cancel();
+                    arrow.exHandler.accept(new EOFException());
                 }
             }else if(key.isWritable()){
                 int size = arrow.to.write(arrow.buf);
