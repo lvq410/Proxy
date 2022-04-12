@@ -14,6 +14,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Validate;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.ApplicationPidFileWriter;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 import com.google.common.net.HostAndPort;
@@ -30,7 +31,9 @@ import lombok.extern.slf4j.Slf4j;
 public class ProxyApp {
 
     public static void main(String[] args) {
-        SpringApplication.run(ProxyApp.class, args);
+        SpringApplication app = new SpringApplication(ProxyApp.class);
+        app.addListeners(new ApplicationPidFileWriter());
+        app.run(args);
     }
     
     public static ServerSocketChannel server(InetAddress host, int port) throws IOException {
