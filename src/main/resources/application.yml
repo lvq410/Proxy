@@ -16,7 +16,7 @@ spring:
     banner-mode: "OFF"
   application.name: proxy
   boot.admin.client:
-    enabled: true
+    enabled: false
     url: http://localhost:25020
     instance.prefer-ip: true
     auto-deregistration: true
@@ -30,8 +30,9 @@ logging:
 
 maxIdleTime: 60000
 tcp:
-- port: 80
-  target: 127.0.0.1:33309
+#- port: 80
+#  host: bind-host
+#  target: target:port
 
 socks5:
 #- 1080
