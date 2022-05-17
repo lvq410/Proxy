@@ -8,7 +8,10 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.channels.AsynchronousCloseException;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.spi.AbstractSelectableChannel;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Validate;
@@ -30,7 +33,11 @@ import lombok.extern.slf4j.Slf4j;
 @SpringBootApplication
 public class ProxyApp {
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Throwable {
+//        ServerSocketChannel serverSocketChannel = server(null, 80);
+//        close(serverSocketChannel);
+//        serverSocketChannel = server(null, 80);
+        
         SpringApplication app = new SpringApplication(ProxyApp.class);
         app.addListeners(new ApplicationPidFileWriter());
         app.run(args);
@@ -87,9 +94,30 @@ public class ProxyApp {
         }
         return false;
     }
+    public static void waitDeregister(Selector selector, AbstractSelectableChannel channel) {
+        if(channel==null || selector==null) return;
+        if(!channel.isRegistered()) return;
+        SelectionKey key = channel.keyFor(selector);
+        if(key==null) return;
+        selector.wakeup();
+        long timeout = 1000;
+        long waited = 0;
+        long gap = 10;
+        while((key = channel.keyFor(selector))!=null && waited<timeout){
+            try{
+                Thread.sleep(gap);
+                waited += gap;
+            }catch(InterruptedException e){
+                break;
+            }
+        }
+    }
     
     public static interface IOExceptionConsumer<T> {
         void accept(T t) throws IOException;
+    }
+    public static interface IoExceptionBiConsumer<T,U> {
+        void accept(T t, U u) throws IOException;
     }
     public static interface IOExceptionRunnable {
         void run() throws IOException;

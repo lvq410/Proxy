@@ -110,6 +110,7 @@ public class ChannelTransmitter extends Thread implements UncaughtExceptionHandl
     public void destory() {
         try{
             selector.close();
+            join(100);
         }catch(Exception e){
             log.error("channel trans close err", e);
         }

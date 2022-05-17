@@ -20,13 +20,8 @@ gradlew.bat
 
 #app
 applicationPid
-rbac.db
-rbac.db-journal
-rbac.mv.db
-rbac.lock.db
-rbac.trace.db
-/backup/
 /config/
 /test/
 /logs/
 *.log
+application.pid

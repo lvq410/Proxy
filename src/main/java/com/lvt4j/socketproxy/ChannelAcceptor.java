@@ -51,6 +51,7 @@ public class ChannelAcceptor extends Thread implements UncaughtExceptionHandler 
     public void destory() {
         try{
             selector.close();
+            join(1000);
         }catch(Exception e){
             log.error("channel acceptor close err", e);
         }
@@ -75,6 +76,10 @@ public class ChannelAcceptor extends Thread implements UncaughtExceptionHandler 
             }
         });
         selector.wakeup();
+    }
+    
+    public void waitDeregister(ServerSocketChannel channel) {
+        ProxyApp.waitDeregister(selector, channel);
     }
     
     @Override @SneakyThrows

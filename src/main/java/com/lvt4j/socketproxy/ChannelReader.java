@@ -55,6 +55,7 @@ public class ChannelReader extends Thread implements UncaughtExceptionHandler {
     public void destory() {
         try{
             selector.close();
+            join(1000);
         }catch(Exception e){
             log.error("channel reader close err", e);
         }

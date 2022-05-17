@@ -8,8 +8,6 @@ import static java.util.stream.Collectors.mapping;
 import static java.util.stream.Collectors.toList;
 
 import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.net.URL;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.Collections;
@@ -23,7 +21,6 @@ import java.util.TreeMap;
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
 
-import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.info.Info.Builder;
@@ -32,7 +29,6 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import com.google.common.collect.ImmutableSet;
-import com.google.common.net.HostAndPort;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -47,21 +43,12 @@ import lombok.extern.slf4j.Slf4j;
 @Service
 public class HttpService implements InfoContributor {
 
-    private static final byte LineFeed = '\n';
-    private static final byte RetChar = '\r';
-    
-    private static final byte[] EstablishedHeaders = "HTTP/1.0 200 Connection established\r\nProxy-Agent: lvt4j-SocketProxy/1.0\r\n\r\n".getBytes();
-    
     @Autowired
     private Config config;
     @Autowired
-    private ChannelReader reader;
-    @Autowired
-    private ChannelWriter writer;
-    @Autowired
     private ChannelAcceptor acceptor;
     @Autowired
-    private ChannelConnector connector;
+    private ProtocolService protocolService;
     
     private Map<Integer, ServerMeta> servers = new HashMap<>();
     
@@ -138,6 +125,7 @@ public class HttpService implements InfoContributor {
             if(src2target!=null) src2target.destory();
             if(target2src!=null) target2src.destory();
             ProxyApp.close(serverSocketChannel);
+            acceptor.waitDeregister(serverSocketChannel);
             servers.remove(port);
             log.info("{} http5代理停止", port);
         }
@@ -184,84 +172,23 @@ public class HttpService implements InfoContributor {
                     
                     if(log.isTraceEnabled()) log.trace("{} connecting {}", port, direction);
                     
-                    connect_begin();
+                    protocolService.http_server_connect(src, (targetStr, target)->{
+                        ConnectMeta.this.targetStr = targetStr;
+                        ConnectMeta.this.target = target;
+                        
+                        direction = String.format("%s->%s->%s->%s"
+                            ,format(src.getRemoteAddress()), port(src.getLocalAddress())
+                            ,port(target.getLocalAddress()), format(target.getRemoteAddress()));
+                        
+                        src2target.transmit(src, target, 1024, this::onTrans, this::onException);
+                        target2src.transmit(target, src, 1024, this::onTrans, this::onException);
+                        
+                        log.info("{} connected {}", port, direction);
+                    }, this::onException);
                 }catch(IOException e){
                     destory();
                     throw e;
                 }
-            }
-            private void connect_begin() {
-                reader.readUntilByte(src, LineFeed, data->{
-                    String statusLine = new String(data, 0, data.length-1);
-                    String[] split = statusLine.split(" ");
-                    if(split.length!=3){
-                        log.error("非法的http请求状态行：%s", statusLine);
-                        destory();
-                        return;
-                    }
-                    if("CONNECT".equals(split[0])){
-                        connect_https_begin(split);
-                    }else{
-                        connect_http(split, data);
-                    }
-                    
-                }, this::onException);
-            }
-            private void connect_http(String[] statusLine, byte[] statusLineRaw) throws IOException {
-                URL url = new URL(statusLine[1]);
-                int port = url.getPort();
-                if(port==-1) port = url.getDefaultPort();
-                targetStr = url.getHost()+":"+port;
-                
-                target = SocketChannel.open();
-                target.configureBlocking(false);
-                target.connect(new InetSocketAddress(url.getHost(), port));
-                
-                connector.connect(target, ()->{
-                    writer.write(target, statusLineRaw, this::connect_end, this::onException);
-                }, e->{
-                    log.error("连接目标失败 : {}", targetStr, e);
-                    destory();
-                });
-            }
-            private void connect_https_begin(String[] statusLine) throws IOException {
-                targetStr = statusLine[1];
-                HostAndPort hp = ProxyApp.validHostPort(targetStr);
-                if(hp==null){
-                    log.error("请求头中非法的目标地址 : %s", targetStr);
-                    destory();
-                }else{
-                    target = SocketChannel.open();
-                    target.configureBlocking(false);
-                    target.connect(new InetSocketAddress(hp.getHostText(), hp.getPort()));
-                    
-                    connector.connect(target, this::connect_https_exhaust_headers, e->{
-                        log.error("连接目标失败 : {}", targetStr, e);
-                        destory();
-                    });
-                }
-            }
-            /** 读掉https建立连接请求中的全部的请求头 */
-            private void connect_https_exhaust_headers() {
-                reader.readUntilByte(src, LineFeed, data->{
-                    data = ArrayUtils.removeElement(data, RetChar); //如win类操作系统，换行同时会携带'\r'，去掉它
-                    if(data.length==1){//请求头结束，返回连接建立成功消息
-                        writer.write(src, EstablishedHeaders, this::connect_end, this::onException);
-                    }else{
-                        connect_https_exhaust_headers();
-                    }
-                }, this::onException);
-            }
-            
-            private void connect_end() throws IOException {
-                direction = String.format("%s->%s->%s->%s"
-                    ,format(src.getRemoteAddress()), port(src.getLocalAddress())
-                    ,port(target.getLocalAddress()), format(target.getRemoteAddress()));
-                
-                src2target.transmit(src, target, 1024, this::onTrans, this::onException);
-                target2src.transmit(target, src, 1024, this::onTrans, this::onException);
-                
-                log.info("{} connected {}", port, direction);
             }
             
             private void onTrans() {

@@ -94,9 +94,17 @@ public class Config {
         public Integer port;
         public HostAndPort target;
         
+        public ProxyConfig proxy;
+        
         public void setTarget(String target) {
             this.target = ProxyApp.validHostPort(target);
             Validate.notNull(this.target, "非法的地址:%s", target);
+        }
+        
+        public void setProxy(ProxyConfig proxy) {
+            Validate.notNull(proxy.protocol, "代理配置协议缺失");
+            Validate.notNull(proxy.server, "代理配置服务缺失");
+            this.proxy = proxy;
         }
         
         public String shortDirection() {
@@ -108,7 +116,23 @@ public class Config {
         public String direction() {
             String direction = String.format("%s->%s", port, target);
             if(host!=null) direction = format(host)+":"+direction;
+            if(proxy!=null) direction += " via "+proxy.direction();
             return direction;
+        }
+    }
+    
+    @Data
+    public static class ProxyConfig {
+        public Protocol protocol;
+        public HostAndPort server;
+        
+        public void setServer(String server) {
+            this.server = ProxyApp.validHostPort(server);
+            Validate.notNull(this.server, "非法的地址:%s", server);
+        }
+        
+        public String direction() {
+            return protocol.toString().toLowerCase()+"://"+server;
         }
     }
     

@@ -1,6 +1,7 @@
 package com.lvt4j.socketproxy;
 
 import static org.junit.Assert.assertEquals;
+import static com.lvt4j.socketproxy.ProtocolService.Socks5.*;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -11,6 +12,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.reflect.FieldUtils;
 import org.junit.After;
 import org.junit.Before;
@@ -24,11 +26,6 @@ import com.google.common.primitives.Shorts;
  */
 public class Socks5ServiceTest extends BaseTest {
 
-    private static final byte[] NoAcc = {5, -1};
-    private static final byte[] Acc = {5, 0};
-    private static final byte[] Fail = {5,1,0,1, 0,0,0,0, 0,0};
-    private static final byte[] Suc = {5,0,0,1, 0,0,0,0, 0,0};
-    
     private int port = availablePort();
     
     private Socks5Service service;
@@ -37,8 +34,10 @@ public class Socks5ServiceTest extends BaseTest {
     
     private ChannelReader reader;
     private ChannelWriter writer;
-    private ChannelAcceptor acceptor;
     private ChannelConnector connector;
+    private ProtocolService protocolService;
+    
+    private ChannelAcceptor acceptor;
     
     private Socket socket;
     private InputStream in;
@@ -57,18 +56,21 @@ public class Socks5ServiceTest extends BaseTest {
         
         config = new Config();
         config.setSocks5(Arrays.asList(port));
+        FieldUtils.writeField(service, "config", config, true);
+        
+        acceptor = new ChannelAcceptor(); invoke(acceptor, "init");
+        FieldUtils.writeField(service, "acceptor", acceptor, true);
         
         reader = new ChannelReader(); invoke(reader, "init");
         writer = new ChannelWriter(); invoke(writer, "init");
-        acceptor = new ChannelAcceptor(); invoke(acceptor, "init");
         connector = new ChannelConnector(); invoke(connector, "init");
         
-        FieldUtils.writeField(service, "config", config, true);
-        FieldUtils.writeField(service, "reader", reader, true);
-        FieldUtils.writeField(service, "writer", writer, true);
-        FieldUtils.writeField(service, "acceptor", acceptor, true);
-        FieldUtils.writeField(service, "connector", connector, true);
-        
+        protocolService = new ProtocolService();
+        FieldUtils.writeField(protocolService, "reader", reader, true);
+        FieldUtils.writeField(protocolService, "writer", writer, true);
+        FieldUtils.writeField(protocolService, "connector", connector, true);
+        FieldUtils.writeField(service, "protocolService", protocolService, true);
+
         invoke(service, "init");
         
         socket = new Socket("127.0.0.1", port);
@@ -99,14 +101,14 @@ public class Socks5ServiceTest extends BaseTest {
         invoke(service, "reloadConfig");
         Map<Integer, ?> servers = (Map<Integer, ?>) FieldUtils.readField(service, "servers", true);
         assertEquals(socks5.size(), servers.size());
-        assertEquals(socks5, servers.keySet());
+        CollectionUtils.isEqualCollection(socks5, servers.keySet());
         
         socks5 = Arrays.asList(availablePort());
         config.setSocks5(socks5);
         invoke(service, "reloadConfig");
         servers = (Map<Integer, ?>) FieldUtils.readField(service, "servers", true);
         assertEquals(socks5.size(), servers.size());
-        assertEquals(socks5, servers.keySet());
+        CollectionUtils.isEqualCollection(socks5, servers.keySet());
     }
     
     @Test

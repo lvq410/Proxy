@@ -51,6 +51,7 @@ public class ChannelConnector extends Thread implements UncaughtExceptionHandler
     public void destory() {
         try{
             selector.close();
+            join(1000);
         }catch(Exception e){
             log.error("channel connector close err", e);
         }

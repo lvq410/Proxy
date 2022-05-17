@@ -33,6 +33,7 @@ import org.springframework.stereotype.Service;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.common.net.HostAndPort;
+import com.lvt4j.socketproxy.Config.ProxyConfig;
 import com.lvt4j.socketproxy.Config.TcpConfig;
 
 import lombok.extern.slf4j.Slf4j;
@@ -51,6 +52,8 @@ public class TcpService implements InfoContributor {
     private ChannelAcceptor acceptor;
     @Autowired
     private ChannelConnector connector;
+    @Autowired
+    private ProtocolService protocol;
     
     private Map<TcpConfig, ServerMeta> servers = new HashMap<>();
     
@@ -96,9 +99,11 @@ public class TcpService implements InfoContributor {
     }
     
     private class ServerMeta {
+        private final TcpConfig config;
         private final InetAddress host;
         private final int port;
         private final HostAndPort target;
+        private final ProxyConfig proxy;
         
         private final String shortDirection;
         private final String direction;
@@ -110,13 +115,15 @@ public class TcpService implements InfoContributor {
         
         private final List<ConnectMeta> connections = Collections.synchronizedList(new LinkedList<>());
         
-        public ServerMeta(TcpConfig c) throws IOException {
-            this.host = c.getHost();
-            this.port = c.getPort();
-            this.target = c.getTarget();
+        public ServerMeta(TcpConfig config) throws IOException {
+            this.config = config;
+            this.host = config.getHost();
+            this.port = config.getPort();
+            this.target = config.getTarget();
+            this.proxy = config.getProxy();
             
-            this.shortDirection = c.shortDirection();
-            this.direction = c.direction();
+            this.shortDirection = config.shortDirection();
+            this.direction = config.direction();
             
             try{
                 serverSocketChannel = ProxyApp.server(host, port);
@@ -131,7 +138,7 @@ public class TcpService implements InfoContributor {
             }
         }
         private void accept(SocketChannel src) throws IOException {
-            connections.add(new ConnectMeta(src, target));
+            connections.add(new ConnectMeta(src, target, proxy));
         }
         
         public void destory() {
@@ -139,14 +146,15 @@ public class TcpService implements InfoContributor {
             if(src2target!=null) src2target.destory();
             if(target2src!=null) target2src.destory();
             ProxyApp.close(serverSocketChannel);
-            servers.remove(port);
+            acceptor.waitDeregister(serverSocketChannel);
+            servers.remove(config);
             log.info("{} tcp代理停止", shortDirection);
         }
         
         public void cleanIdle() {
             synchronized (connections) {
                 for(ConnectMeta connect : ImmutableSet.copyOf(connections)){
-                    if(System.currentTimeMillis()-connect.latestTouchTime<config.getMaxIdleTime()) continue;
+                    if(System.currentTimeMillis()-connect.latestTouchTime<TcpService.this.config.getMaxIdleTime()) continue;
                     connect.destory();
                 }
             }
@@ -167,41 +175,59 @@ public class TcpService implements InfoContributor {
             private final SocketChannel src;
             
             private final HostAndPort targetConfig;
-            private final SocketChannel target;
+            private final ProxyConfig proxyConfig;
+            private SocketChannel target;
             
             private String direction;
             
             private long latestTouchTime = System.currentTimeMillis();
             
-            public ConnectMeta(SocketChannel src, HostAndPort targetConfig) throws IOException {
+            public ConnectMeta(SocketChannel src, HostAndPort targetConfig, ProxyConfig proxyConfig) throws IOException {
                 this.src = src;
+                this.proxyConfig = proxyConfig;
                 try{
                     src.configureBlocking(false);
                     
                     this.targetConfig = targetConfig;
-                    target = SocketChannel.open();
-                    target.configureBlocking(false);
-                    target.connect(new InetSocketAddress(targetConfig.getHostText(), targetConfig.getPort()));
-                    
                     direction = String.format("%s->%s->%s->%s"
                         ,format(src.getRemoteAddress()), port(src.getLocalAddress())
-                        ,"initializing" , format(target.getRemoteAddress()));
+                        ,"initializing" , targetConfig);
                     
-                    connector.connect(target, ()->{
-                        direction = String.format("%s->%s->%s->%s"
-                            ,format(src.getRemoteAddress()), port(src.getLocalAddress())
-                            ,port(target.getLocalAddress()), format(target.getRemoteAddress()));
+                    if(proxy==null){
+                        target = SocketChannel.open();
+                        target.configureBlocking(false);
+                        target.connect(new InetSocketAddress(targetConfig.getHostText(), targetConfig.getPort()));
                         
-                        src2target.transmit(src, target, 1024, this::onTrans, this::onException);
-                        target2src.transmit(target, src, 1024, this::onTrans, this::onException);
-                        
-                        log.info("{} connected {}", shortDirection, direction);
-                    }, this::onException);
-                    
+                        connector.connect(target, ()->onDirectConnect(target), this::onException);
+                    }else{
+                        protocol.client_connect(proxy.protocol, proxy.server, targetConfig, this::onProxyConnect, this::onException);
+                    }
                 }catch(IOException e){
                     destory();
                     throw e;
                 }
+            }
+            private void onDirectConnect(SocketChannel target) throws IOException {
+                this.target = target;
+                direction = String.format("%s->%s->%s->%s"
+                    ,format(src.getRemoteAddress()), port(src.getLocalAddress())
+                    ,port(target.getLocalAddress()), format(target.getRemoteAddress()));
+                
+                src2target.transmit(src, target, 1024, this::onTrans, this::onException);
+                target2src.transmit(target, src, 1024, this::onTrans, this::onException);
+                
+                log.info("{} connected {}", shortDirection, direction);
+            }
+            private void onProxyConnect(SocketChannel proxy) throws IOException {
+                this.target = proxy;
+                direction = String.format("%s->%s->%s->%s->%s"
+                        ,format(src.getRemoteAddress()), port(src.getLocalAddress())
+                        ,port(proxy.getLocalAddress()), proxyConfig.direction(), targetConfig);
+                
+                src2target.transmit(src, target, 1024, this::onTrans, this::onException);
+                target2src.transmit(target, src, 1024, this::onTrans, this::onException);
+                
+                log.info("{} connected {}", shortDirection, direction);
             }
             
             private void onTrans() {

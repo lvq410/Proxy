@@ -1,6 +1,8 @@
 package com.lvt4j.socketproxy;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+import static com.lvt4j.socketproxy.ProtocolService.Http.*;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -11,6 +13,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.reflect.FieldUtils;
 import org.junit.After;
 import org.junit.Before;
@@ -22,8 +25,6 @@ import org.junit.Test;
  */
 public class HttpServiceTest extends BaseTest {
 
-    private static final byte[] EstablishedHeaders = "HTTP/1.0 200 Connection established\r\nProxy-Agent: lvt4j-SocketProxy/1.0\r\n\r\n".getBytes();
-    
     private int port;
     
     private HttpService service;
@@ -33,6 +34,7 @@ public class HttpServiceTest extends BaseTest {
     private ChannelWriter writer;
     private ChannelAcceptor acceptor;
     private ChannelConnector connector;
+    private ProtocolService protocolService;
     
     private Socket socket;
     private InputStream in;
@@ -52,17 +54,19 @@ public class HttpServiceTest extends BaseTest {
         
         config = new Config();
         config.setHttp(Arrays.asList(port));
+        FieldUtils.writeField(service, "config", config, true);
+        
+        acceptor = new ChannelAcceptor(); invoke(acceptor, "init");
+        FieldUtils.writeField(service, "acceptor", acceptor, true);
         
         reader = new ChannelReader(); invoke(reader, "init");
         writer = new ChannelWriter(); invoke(writer, "init");
-        acceptor = new ChannelAcceptor(); invoke(acceptor, "init");
         connector = new ChannelConnector(); invoke(connector, "init");
-        
-        FieldUtils.writeField(service, "config", config, true);
-        FieldUtils.writeField(service, "reader", reader, true);
-        FieldUtils.writeField(service, "writer", writer, true);
-        FieldUtils.writeField(service, "acceptor", acceptor, true);
-        FieldUtils.writeField(service, "connector", connector, true);
+        protocolService = new ProtocolService();
+        FieldUtils.writeField(protocolService, "reader", reader, true);
+        FieldUtils.writeField(protocolService, "writer", writer, true);
+        FieldUtils.writeField(protocolService, "connector", connector, true);
+        FieldUtils.writeField(service, "protocolService", protocolService, true);
         
         invoke(service, "init");
         
@@ -96,14 +100,14 @@ public class HttpServiceTest extends BaseTest {
         invoke(service, "reloadConfig");
         Map<Integer, ?> servers = (Map<Integer, ?>) FieldUtils.readField(service, "servers", true);
         assertEquals(http.size(), servers.size());
-        assertEquals(http, servers.keySet());
+        assertTrue(CollectionUtils.isEqualCollection(http, servers.keySet()));
         
         http = Arrays.asList(availablePort());
         config.setHttp(http);
         invoke(service, "reloadConfig");
         servers = (Map<Integer, ?>) FieldUtils.readField(service, "servers", true);
         assertEquals(http.size(), servers.size());
-        assertEquals(http, servers.keySet());
+        assertTrue(CollectionUtils.isEqualCollection(http, servers.keySet()));
     }
     
 
