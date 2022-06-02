@@ -1,5 +1,6 @@
 package com.lvt4j.socketproxy;
 
+import static com.lvt4j.socketproxy.ProtocolService.Pws.TargetHeader;
 import static com.lvt4j.socketproxy.ProxyApp.format;
 import static com.lvt4j.socketproxy.ProxyApp.isCloseException;
 import static com.lvt4j.socketproxy.ProxyApp.port;
@@ -11,6 +12,8 @@ import static java.util.stream.Collectors.toList;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.URI;
+import java.nio.ByteBuffer;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.Collections;
@@ -25,17 +28,20 @@ import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
 
 import org.apache.commons.lang3.StringUtils;
+import org.java_websocket.client.WebSocketClient;
+import org.java_websocket.handshake.ServerHandshake;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.info.Info.Builder;
 import org.springframework.boot.actuate.info.InfoContributor;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.net.HostAndPort;
-import com.lvt4j.socketproxy.Config.ProxyConfig;
 import com.lvt4j.socketproxy.Config.TcpConfig;
 
+import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -52,6 +58,10 @@ public class TcpService implements InfoContributor {
     private ChannelAcceptor acceptor;
     @Autowired
     private ChannelConnector connector;
+    @Autowired
+    private ChannelReader reader;
+    @Autowired
+    private ChannelWriter writer;
     @Autowired
     private ProtocolService protocol;
     
@@ -94,6 +104,7 @@ public class TcpService implements InfoContributor {
     
     @Override
     public void contribute(Builder builder) {
+        if(servers.isEmpty()) return;
         builder.withDetail("tcp", config.getTcp().stream().map(servers::get).filter(Objects::nonNull)
             .map(ServerMeta::info).collect(joining("\n")));
     }
@@ -103,7 +114,7 @@ public class TcpService implements InfoContributor {
         private final InetAddress host;
         private final int port;
         private final HostAndPort target;
-        private final ProxyConfig proxy;
+        private final URI proxy;
         
         private final String shortDirection;
         private final String direction;
@@ -175,14 +186,15 @@ public class TcpService implements InfoContributor {
             private final SocketChannel src;
             
             private final HostAndPort targetConfig;
-            private final ProxyConfig proxyConfig;
+            private final URI proxyConfig;
+            private PwsClient pwsProxy;
             private SocketChannel target;
             
             private String direction;
             
             private long latestTouchTime = System.currentTimeMillis();
             
-            public ConnectMeta(SocketChannel src, HostAndPort targetConfig, ProxyConfig proxyConfig) throws IOException {
+            public ConnectMeta(SocketChannel src, HostAndPort targetConfig, URI proxyConfig) throws IOException {
                 this.src = src;
                 this.proxyConfig = proxyConfig;
                 try{
@@ -200,7 +212,16 @@ public class TcpService implements InfoContributor {
                         
                         connector.connect(target, ()->onDirectConnect(target), this::onException);
                     }else{
-                        protocol.client_connect(proxy.protocol, proxy.server, targetConfig, this::onProxyConnect, this::onException);
+                        Protocol protocol = Protocol.parse(proxyConfig.getScheme());
+                        switch(protocol){
+                        case Pws:
+                        case Pwss:
+                            pwsProxy = new PwsClient(proxyConfig);
+                            break;
+                        default:
+                            TcpService.this.protocol.client_connect(proxyConfig, targetConfig, this::onProxyConnect, this::onException);
+                            break;
+                        }
                     }
                 }catch(IOException e){
                     destory();
@@ -222,7 +243,7 @@ public class TcpService implements InfoContributor {
                 this.target = proxy;
                 direction = String.format("%s->%s->%s->%s->%s"
                         ,format(src.getRemoteAddress()), port(src.getLocalAddress())
-                        ,port(proxy.getLocalAddress()), proxyConfig.direction(), targetConfig);
+                        ,port(proxy.getLocalAddress()), proxyConfig, targetConfig);
                 
                 src2target.transmit(src, target, 1024, this::onTrans, this::onException);
                 target2src.transmit(target, src, 1024, this::onTrans, this::onException);
@@ -242,9 +263,56 @@ public class TcpService implements InfoContributor {
             private void destory() {
                 ProxyApp.close(src);
                 ProxyApp.close(target);
+                if(pwsProxy!=null && pwsProxy.isOpen()) pwsProxy.close();
                 connections.remove(this);
                 
                 log.info("{} disconnected {}", shortDirection, direction);
+            }
+            
+            class PwsClient extends WebSocketClient {
+
+                public PwsClient(URI pwsServer) {
+                    super(Protocol.pws2ws(pwsServer), ImmutableMap.of(TargetHeader, targetConfig.toString()));
+                    connect();
+                }
+                @Override @SneakyThrows
+                public void onOpen(ServerHandshake handshakedata) {
+                    direction = String.format("%s->%s->%s->%s"
+                        ,format(src.getRemoteAddress()), port(src.getLocalAddress())
+                        ,port(getLocalSocketAddress()), format(getRemoteSocketAddress()));
+                    
+                    srcRead(null);
+                    
+                    log.info("{} connected {}", shortDirection, direction);
+                }
+                @Override
+                public void onMessage(String message) {}
+                @Override
+                public void onMessage(ByteBuffer bytes) {
+                    dataFromTargetToSrc(bytes);
+                }
+                private void srcRead(ByteBuffer buf) {
+                    if(buf==null) buf = ByteBuffer.allocate(1024);
+                    reader.readAny(src, buf, data->{
+                        dataFromSrcToTarget(data);
+                        srcRead(data);
+                    }, this::onError);
+                }
+                private void dataFromSrcToTarget(ByteBuffer buf) {
+                    send(buf);
+                    onTrans();
+                }
+                private void dataFromTargetToSrc(ByteBuffer buf) {
+                    writer.write(src, buf, this::onError);
+                    onTrans();
+                }
+                @Override
+                public void onClose(int code, String reason, boolean remote) {}
+                @Override
+                public void onError(Exception ex) {
+                    onException(ex);
+                }
+                
             }
         }
     }

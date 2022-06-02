@@ -97,4 +97,7 @@ dependencies {
     api 'org.springframework.cloud:spring-cloud-context:2.1.1.RELEASE'
     api 'de.codecentric:spring-boot-admin-starter-client:2.1.6'
     api 'io.micrometer:micrometer-registry-prometheus'
+    
+    api 'org.java-websocket:Java-WebSocket:1.5.3'
+    
 }

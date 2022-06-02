@@ -34,10 +34,6 @@ import lombok.extern.slf4j.Slf4j;
 public class ProxyApp {
 
     public static void main(String[] args) throws Throwable {
-//        ServerSocketChannel serverSocketChannel = server(null, 80);
-//        close(serverSocketChannel);
-//        serverSocketChannel = server(null, 80);
-        
         SpringApplication app = new SpringApplication(ProxyApp.class);
         app.addListeners(new ApplicationPidFileWriter());
         app.run(args);

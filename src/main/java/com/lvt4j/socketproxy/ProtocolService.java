@@ -8,6 +8,7 @@ import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.MalformedURLException;
+import java.net.URI;
 import java.net.URL;
 import java.nio.channels.SocketChannel;
 import java.util.Arrays;
@@ -48,6 +49,12 @@ public class ProtocolService {
         
         public static final byte[] EstablishedHeaders = "HTTP/1.0 200 Connection established\r\nProxy-Agent: lvt4j-SocketProxy/1.0\r\n\r\n".getBytes();
     }
+    public static class Pws {
+        /**
+         * 请求头中携带目标服务地址
+         */
+        public static final String TargetHeader = "Pws-Target";
+    }
     
     @Autowired
     private ChannelReader reader;
@@ -56,6 +63,11 @@ public class ProtocolService {
     @Autowired
     private ChannelConnector connector;
     
+    public void client_connect(URI server, HostAndPort targetConfig,
+            IOExceptionConsumer<SocketChannel> onConnect, Consumer<Exception> exHandler) {
+        client_connect(Protocol.parse(server.getScheme()), HostAndPort.fromParts(server.getHost(), server.getPort()),
+            targetConfig, onConnect, exHandler);
+    }
     public void client_connect(Protocol protocol, HostAndPort serverConfig, HostAndPort targetConfig,
             IOExceptionConsumer<SocketChannel> onConnect, Consumer<Exception> exHandler) {
         switch(protocol){
@@ -66,7 +78,7 @@ public class ProtocolService {
             http_client_connect(serverConfig, targetConfig, onConnect, exHandler);
             break;
         default:
-            break;
+            throw new IllegalArgumentException(format("不支持的协议：%s", protocol));
         }
     }
     
@@ -504,5 +516,5 @@ public class ProtocolService {
             closeExHandler.accept(new IOException(format("连接目标失败 : %s", targetConfig), e));
         });
     }
-    
+
 }

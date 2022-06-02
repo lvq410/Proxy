@@ -102,6 +102,24 @@ public class ChannelWriter extends Thread implements UncaughtExceptionHandler {
         });
         selector.wakeup();
     }
+    public void write(SocketChannel channel, ByteBuffer data, Consumer<Exception> exHandler) {
+        registerQueue.add(()->{
+            SelectionKey key = channel.keyFor(selector);
+            WriteContinuousMeta meta;
+            if(key==null){
+                meta = new WriteContinuousMeta();
+                meta.channel = channel;
+                meta.exHandler = exHandler;
+                meta.queue.add(data);
+            }else{
+                meta = (WriteContinuousMeta) key.attachment();
+                
+                meta.queue.add(data);
+            }
+            write(meta);
+        });
+        selector.wakeup();
+    }
     private void write(WriteMeta meta) {
         try{
             meta.channel.register(selector, OP_WRITE, meta);

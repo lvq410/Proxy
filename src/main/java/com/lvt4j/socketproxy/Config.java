@@ -4,10 +4,12 @@ import static com.lvt4j.socketproxy.ProxyApp.format;
 import static java.util.Collections.emptyList;
 
 import java.net.InetAddress;
+import java.net.URI;
 import java.util.List;
 
 import javax.annotation.PreDestroy;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Validate;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.cloud.context.config.annotation.RefreshScope;
@@ -32,6 +34,7 @@ public class Config {
     public static Runnable changeCallback_socks5;
     public static Runnable changeCallback_http;
     public static Runnable changeCallback_intranet;
+    public static Runnable changeCallback_pws;
     
     @Setter@Getter
     private long maxIdleTime;
@@ -44,6 +47,8 @@ public class Config {
     private List<Integer> http = emptyList();
     @Getter
     private List<IntranetConfig> intranet = emptyList();
+    @Getter@Setter
+    private List<Integer> pws = emptyList();
     
     public void setTcp(List<TcpConfig> tcp) {
         for(TcpConfig c : tcp){
@@ -80,6 +85,7 @@ public class Config {
             if(changeCallback_socks5!=null) changeCallback_socks5.run();
             if(changeCallback_http!=null) changeCallback_http.run();
             if(changeCallback_intranet!=null) changeCallback_intranet.run();
+            if(changeCallback_pws!=null) changeCallback_pws.run();
         }).start();
     }
     
@@ -94,17 +100,27 @@ public class Config {
         public Integer port;
         public HostAndPort target;
         
-        public ProxyConfig proxy;
+        public URI proxy;
         
         public void setTarget(String target) {
             this.target = ProxyApp.validHostPort(target);
             Validate.notNull(this.target, "非法的地址:%s", target);
         }
         
-        public void setProxy(ProxyConfig proxy) {
-            Validate.notNull(proxy.protocol, "代理配置协议缺失");
-            Validate.notNull(proxy.server, "代理配置服务缺失");
-            this.proxy = proxy;
+        public void setProxy(String proxy) {
+            if(proxy==null) return;
+            URI url;
+            try{
+                url = new URI(proxy);
+            }catch(Exception e){
+                throw new IllegalArgumentException(String.format("非法的代理格式：%s", proxy));
+            }
+            Protocol protocol = Protocol.parse(url.getScheme());
+            Validate.notNull(protocol, "代理配置中协议不支持：%s", url.getScheme());
+            Validate.isTrue(url.getPort()>0, "代理配置中端口号异常：%s", url.getPort());
+            Validate.isTrue(StringUtils.isBlank(url.getPath()), "非法的代理格式：%s", proxy);
+            Validate.isTrue(StringUtils.isBlank(url.getQuery()), "非法的代理格式：%s", proxy);
+            this.proxy = url;
         }
         
         public String shortDirection() {
@@ -116,23 +132,8 @@ public class Config {
         public String direction() {
             String direction = String.format("%s->%s", port, target);
             if(host!=null) direction = format(host)+":"+direction;
-            if(proxy!=null) direction += " via "+proxy.direction();
+            if(proxy!=null) direction += " via "+proxy;
             return direction;
-        }
-    }
-    
-    @Data
-    public static class ProxyConfig {
-        public Protocol protocol;
-        public HostAndPort server;
-        
-        public void setServer(String server) {
-            this.server = ProxyApp.validHostPort(server);
-            Validate.notNull(this.server, "非法的地址:%s", server);
-        }
-        
-        public String direction() {
-            return protocol.toString().toLowerCase()+"://"+server;
         }
     }
     
