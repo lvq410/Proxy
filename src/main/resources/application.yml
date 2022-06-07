@@ -26,7 +26,6 @@ logging:
   file.max-history: 30
   level:
     root: info
-    com.lvt4j.socketproxy: trace
 
 maxIdleTime: 60000
 tcp:

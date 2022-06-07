@@ -99,5 +99,30 @@ dependencies {
     api 'io.micrometer:micrometer-registry-prometheus'
     
     api 'org.java-websocket:Java-WebSocket:1.5.3'
+}
+
+tasks.register('release', Zip) {
+    delete "$buildDir/release"
     
+    copy {
+        from "$projectDir/src/main/resources/application.yml"
+        into "$buildDir/release/config"
+    }
+    
+    doFirst {
+        copy {
+            from "$projectDir/start.sh"
+            from "$projectDir/stop.sh"
+            from "$projectDir/restart.sh"
+            from "$buildDir/libs/proxy.jar"
+            into "$buildDir/release"
+        }
+    }
+    
+    from "$buildDir/release"
+    include "*.sh","proxy.jar","config/application.yml"
+    baseName "release"
+    destinationDir file("$buildDir/release")
+    
+    dependsOn bootJar
 }

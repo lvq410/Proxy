@@ -44,6 +44,7 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * 基于WebSocket的私有协议
  * @author LV on 2022年6月2日
+ * @see https://zhuanlan.zhihu.com/p/407711596
  */
 @Slf4j
 @Service
