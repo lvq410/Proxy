@@ -61,4 +61,4 @@ tcp:
 
 > 目前仅支持这三种代理协议
 
-另可参考 [私有WebSocket](docs/pws.md)
+另可参考 [私有WebSocket](pws.md)
