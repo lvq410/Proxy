@@ -27,5 +27,5 @@
 1. 执行start.sh即可
 
 ## docker
-1. 镜像为 `lvq410/proxy:{version}` [hub.docker](https://hub.docker.com/repository/docker/lvq410/proxy)
+1. 镜像为 `lvq410/proxy:{version}` [hub.docker](https://hub.docker.com/r/lvq410/proxy)
 1. 可参考[Release](https://github.com/lvq410/Proxy/releases)包里的config/application.yml配置文件，通过调整环境变量来调整配置
