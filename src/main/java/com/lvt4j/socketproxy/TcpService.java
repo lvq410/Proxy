@@ -214,8 +214,7 @@ public class TcpService implements InfoContributor {
                     }else{
                         Protocol protocol = Protocol.parse(proxyConfig.getScheme());
                         switch(protocol){
-                        case Pws:
-                        case Pwss:
+                        case Pws: case Pwss:
                             pwsProxy = new PwsClient(proxyConfig);
                             break;
                         default:

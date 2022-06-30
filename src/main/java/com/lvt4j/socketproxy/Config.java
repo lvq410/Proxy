@@ -118,8 +118,13 @@ public class Config {
             Protocol protocol = Protocol.parse(url.getScheme());
             Validate.notNull(protocol, "代理配置中协议不支持：%s", url.getScheme());
             Validate.isTrue(url.getPort()>0, "代理配置中端口号异常：%s", url.getPort());
-            Validate.isTrue(StringUtils.isBlank(url.getPath()), "非法的代理格式：%s", proxy);
-            Validate.isTrue(StringUtils.isBlank(url.getQuery()), "非法的代理格式：%s", proxy);
+            switch(protocol){
+            case Pws: case Pwss: break;
+            default:
+                Validate.isTrue(StringUtils.isBlank(url.getPath()), "非法的代理格式：%s", proxy);
+                Validate.isTrue(StringUtils.isBlank(url.getQuery()), "非法的代理格式：%s", proxy);
+                break;
+            }
             this.proxy = url;
         }
         
