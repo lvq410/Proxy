@@ -16,7 +16,7 @@ apply plugin: 'org.springframework.boot'
 apply plugin: 'io.spring.dependency-management'
 apply plugin: 'com.gorylenko.gradle-git-properties'
 
-group = 'com.lvt4j.rbac'
+group = 'com.lvt4j.socketproxy'
 
 repositories {
     maven { url 'http://maven.aliyun.com/nexus/content/groups/public/' }
