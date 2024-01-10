@@ -1,5 +1,5 @@
 # 基础镜像
-FROM openjdk:8-jre-alpine
+FROM adoptopenjdk/openjdk8:jdk8u392-b08-alpine
 
 #使用国内的源
 RUN echo -e 'https://mirrors.aliyun.com/alpine/v3.9/main/\nhttps://mirrors.aliyun.com/alpine/v3.9/community/' > /etc/apk/repositories
