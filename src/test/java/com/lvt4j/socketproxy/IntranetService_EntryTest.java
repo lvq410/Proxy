@@ -3,15 +3,21 @@ package com.lvt4j.socketproxy;
 import static org.apache.commons.lang3.ArrayUtils.EMPTY_BYTE_ARRAY;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.lang.Thread.UncaughtExceptionHandler;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.channels.SocketChannel;
 import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.lang3.ArrayUtils;
@@ -26,6 +32,7 @@ import com.lvt4j.socketproxy.Config.IntranetConfig;
 import com.lvt4j.socketproxy.Config.IntranetConfig.Type;
 import com.lvt4j.socketproxy.IntranetService.MsgType;
 
+import lombok.Cleanup;
 import lombok.SneakyThrows;
 
 /**
@@ -208,6 +215,78 @@ public class IntranetService_EntryTest extends BaseTest {
         assertCnns(0);
     }
     
+    /**
+     * relayer向entry传输完消息后，target立刻关闭
+     * entry应当在给client传完收到的消息后，再close client
+     * @throws Throwable
+     */
+    @Test
+    public void relayer_trans_then_close_immediate() throws Throwable {
+        initRelayer();
+        client1 = new Socket("127.0.0.1", port);
+        
+        client1.getOutputStream().write("hello".getBytes());
+        
+        InputStream relay1In = relay1.getInputStream();
+        while(relay1In.read()!=MsgType.Transmit.Type);
+        byte[] idBs = new byte[4];
+        read(relay1In, idBs);
+        byte[] lenBs = new byte[4];
+        read(relay1In, lenBs);
+        int len = Ints.fromByteArray(lenBs);
+        byte[] data = new byte[len];
+        read(relay1In, data);
+        assertEquals("hello", new String(data));
+        
+        MutableObject<byte[]> client1Read = new MutableObject<>(EMPTY_BYTE_ARRAY);
+        Thread client1Receiver = new Thread(){
+            public void run() {
+                try{
+                    InputStream client1In = client1.getInputStream();
+                    int b;
+                    while((b=client1In.read())!=-1){
+                        client1Read.setValue(ArrayUtils.add(client1Read.getValue(), (byte)b));
+                    }
+                    System.out.println("client1 close");
+                }catch(Exception e){
+                    System.out.println("client1 ex");
+                    e.printStackTrace();
+                }
+            }
+        };
+        client1Receiver.start();
+        
+        //为entry server的writer增加一份待写入消息，以迟滞entry server回传给client消息的时间
+        Map<?, ?> servers = (Map<?, ?>) FieldUtils.readField(service, "servers", true);
+        Object serverMeta = servers.get(entryConfig);
+        ChannelWriter writer = (ChannelWriter) FieldUtils.readField(serverMeta, "writer", true);
+        int blockUseServerPort = availablePort();
+        @Cleanup ServerSocket s = new ServerSocket(blockUseServerPort);
+        SocketChannel blockUseChannel = SocketChannel.open(new InetSocketAddress("127.0.0.1", blockUseServerPort));
+        blockUseChannel.configureBlocking(false);
+       
+        byte[] relay1SendData = new byte[]{1,2};
+        OutputStream relay1Out = relay1.getOutputStream();
+        relay1Out.write(MsgType.Transmit.packet(idBs, new byte[]{1}));
+        
+        //第一条消息发送后，有其他channel占用writer来发消息，并耗费wrtier一些时间
+        writer.write(blockUseChannel, data, ()->{
+            try {
+                Thread.sleep(1000);
+            } catch (Exception e1) {
+                e1.printStackTrace();
+            }
+        }, e->{});
+        
+        //模拟target传输完消息后立刻close
+        relay1Out.write(MsgType.Transmit.packet(idBs, new byte[]{2}));
+        relay1Out.write(MsgType.ConnectClose.packet(idBs));
+        
+        client1Receiver.join(3000);
+        assertTrue(!client1Receiver.isAlive());
+        System.out.println("client收到消息长度："+client1Read.getValue().length);
+        assertTrue(Objects.deepEquals(relay1SendData, client1Read.getValue()));
+    }
     
     private void trans(Socket relay, int idBase) throws Throwable {
         int count = 100;

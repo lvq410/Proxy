@@ -10,15 +10,19 @@ import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
@@ -280,6 +284,10 @@ public class IntranetService implements InfoContributor {
             
             private long latestTouchTime = System.currentTimeMillis();
             
+            private AtomicLong prepareWrite2ClientDataIder = new AtomicLong();
+            private Set<Long> prepareWrite2ClientDataIds = Collections.synchronizedSet(new HashSet<>());
+            private volatile boolean prepareCloseClient = false;
+            
             public ConnectMeta(int id, SocketChannel client) throws IOException {
                 this.id = id; this.idBs = Ints.toByteArray(id);
                 this.client = client;
@@ -300,7 +308,12 @@ public class IntranetService implements InfoContributor {
                 }
             }
             private void dataFromRelayToSrc(byte[] data) {
-                writer.write(client, data, this::onException);
+                long prepareWrite2ClientDataId = prepareWrite2ClientDataIder.incrementAndGet();
+                prepareWrite2ClientDataIds.add(prepareWrite2ClientDataId);
+                writer.write(client, data, ()->{
+                    prepareWrite2ClientDataIds.remove(prepareWrite2ClientDataId);
+                    closeClientIfPossible();
+                }, this::onException);
                 onTrans();
             }
             private void dataFromClientToRelay(ByteBuffer data) throws IOException {
@@ -315,6 +328,7 @@ public class IntranetService implements InfoContributor {
             }
             
             private synchronized void onException(Exception e) {
+                prepareWrite2ClientDataIds.clear();
                 if(!isCloseException(e)) log.error("connection {} err", direction, e);
                 destory();
             }
@@ -323,11 +337,16 @@ public class IntranetService implements InfoContributor {
                 destory(true);
             }
             private void destory(boolean sendCloseMsgToRelay) {
-                ProxyApp.close(client);
+                prepareCloseClient = true; closeClientIfPossible();
                 connections.remove(id);
                 if(sendCloseMsgToRelay) relayWriteConnectClose(MsgType.ConnectClose.packet(idBs));
                 
                 log.info("{} disconnected {}", port, direction);
+            }
+            private void closeClientIfPossible() {
+                if(!prepareCloseClient) return;
+                if(!prepareWrite2ClientDataIds.isEmpty()) return;
+                ProxyApp.close(client);
             }
         }
     }

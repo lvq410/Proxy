@@ -18,10 +18,12 @@ import java.util.function.Consumer;
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
 
+import org.apache.commons.lang3.tuple.Pair;
 import org.springframework.stereotype.Service;
 
 import com.lvt4j.socketproxy.ProxyApp.IOExceptionRunnable;
 
+import lombok.NonNull;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 
@@ -65,67 +67,55 @@ public class ChannelWriter extends Thread implements UncaughtExceptionHandler {
         log.error("channel writer err", e);
     }
     
+    /**
+     * @see #write(SocketChannel, ByteBuffer, IOExceptionRunnable, Consumer)
+     */
     public void write(SocketChannel channel, byte[] data, IOExceptionRunnable onWrite, Consumer<Exception> exHandler) {
-        registerQueue.add(()->{
-            WriteOnceMeta meta = new WriteOnceMeta();
-            meta.channel = channel;
-            meta.buf = ByteBuffer.wrap(data);
-            meta.onWrite = onWrite;
-            meta.exHandler = exHandler;
-            
-            write(meta);
-        });
-        selector.wakeup();
+        write(channel, ByteBuffer.wrap(data), onWrite, exHandler);
     }
+    /**
+     * @see #write(SocketChannel, ByteBuffer, IOExceptionRunnable, Consumer)
+     */
     public void write(SocketChannel channel, byte[] data, Consumer<Exception> exHandler) {
-        registerQueue.add(()->{
-            SelectionKey key = channel.keyFor(selector);
-            WriteContinuousMeta meta;
-            if(key==null){
-                meta = new WriteContinuousMeta();
-                meta.channel = channel;
-                meta.exHandler = exHandler;
-                meta.queue.add(buf(data));
-            }else{
-                meta = (WriteContinuousMeta) key.attachment();
-                
-                ByteBuffer buf = meta.queue.peekLast();
-                if(buf.capacity()-buf.remaining()>=data.length){ //最后一个buf的剩余空间足够，则复用buf
-                    buf.compact();
-                    buf.put(data);
-                    buf.flip();
-                }else{
-                    meta.queue.add(buf(data));
-                }
-            }
-            write(meta);
-        });
-        selector.wakeup();
+        write(channel, data, null, exHandler);
     }
+    /**
+     * @see #write(SocketChannel, ByteBuffer, IOExceptionRunnable, Consumer)
+     */
     public void write(SocketChannel channel, ByteBuffer data, Consumer<Exception> exHandler) {
+        write(channel, data, null, exHandler);
+    }
+    /**
+     * 将一份数据插入待写入队列，onWrite为其对应写入完成后的回调函数，遇到异常exHandler会被调用
+     * 如果同一channel多次调用，每次调用增加的待写入数据data被写入完后，其对应的onWrite都会被调用
+     * 但异常回调函数exHandler会被覆盖成最新的
+     * @param channel 
+     * @param data 待写入数据，不能为空
+     * @param onWrite 对应写入数据的回调函数，可为null
+     * @param exHandler 异常回调，不能为null
+     */
+    public void write(@NonNull SocketChannel channel, @NonNull ByteBuffer data, IOExceptionRunnable onWrite, @NonNull Consumer<Exception> exHandler) {
         registerQueue.add(()->{
             SelectionKey key = channel.keyFor(selector);
-            WriteContinuousMeta meta;
+            WriteMeta meta;
             if(key==null){
-                meta = new WriteContinuousMeta();
+                meta = new WriteMeta();
                 meta.channel = channel;
                 meta.exHandler = exHandler;
-                meta.queue.add(data);
+                meta.queue.add(Pair.of(data, onWrite));
             }else{
-                meta = (WriteContinuousMeta) key.attachment();
+                meta = (WriteMeta) key.attachment();
+                meta.exHandler = exHandler;
                 
-                meta.queue.add(data);
+                meta.queue.add(Pair.of(data, onWrite));
             }
-            write(meta);
+            try{
+                meta.channel.register(selector, OP_WRITE, meta);
+            }catch(Exception e){
+                meta.exHandler.accept(e);
+            }
         });
         selector.wakeup();
-    }
-    private void write(WriteMeta meta) {
-        try{
-            meta.channel.register(selector, OP_WRITE, meta);
-        }catch(Exception e){
-            meta.exHandler.accept(e);
-        }
     }
     
     @Override @SneakyThrows
@@ -152,47 +142,29 @@ public class ChannelWriter extends Thread implements UncaughtExceptionHandler {
         }
     }
     
-    private ByteBuffer buf(byte[] data) {
-        ByteBuffer buf = ByteBuffer.allocate(Math.max(1024, data.length));
-        buf.put(data);
-        buf.flip();
-        return buf;
-    }
-    
-    private abstract class WriteMeta {
-        protected SocketChannel channel;
+    /**
+     * {@link ChannelWriter#selector}上{@link #channel}注册时绑定对象
+     * 记录了待写入数据和对应的回调函数
+     * 以及异常处理函数
+     * @author LV on 2024年1月25日
+     */
+    private class WriteMeta {
+        private SocketChannel channel;
+        private Consumer<Exception> exHandler;
         
-        protected Consumer<Exception> exHandler;
+        /** 待写入数据及对应的回调函数 */
+        private LinkedList<Pair<ByteBuffer, IOExceptionRunnable>> queue = new LinkedList<>();
         
-        protected abstract void write(SelectionKey key) throws IOException;
-    }
-    /** 只写一份数据，写完后执行回调函数 */
-    private class WriteOnceMeta extends WriteMeta {
-        private ByteBuffer buf;
-        private IOExceptionRunnable onWrite;
-        
-        @Override
-        protected void write(SelectionKey key) throws IOException {
-            channel.write(buf);
-            if(buf.hasRemaining()) return;
-            key.cancel();
-            onWrite.run();
-        }
-    }
-    /** 连续写，无需回调函数 */
-    private class WriteContinuousMeta extends WriteMeta {
-        private LinkedList<ByteBuffer> queue = new LinkedList<>();
-        
-        @Override
-        protected void write(SelectionKey key) throws IOException {
-            Iterator<ByteBuffer> it = queue.iterator();
+        public void write(SelectionKey key) throws IOException {
+            Iterator<Pair<ByteBuffer, IOExceptionRunnable>> it = queue.iterator();
             while(it.hasNext()){
-                ByteBuffer buf = it.next();
-                channel.write(buf);
-                if(buf.hasRemaining()){
+                Pair<ByteBuffer, IOExceptionRunnable> pair = it.next();
+                channel.write(pair.getLeft());
+                if(pair.getLeft().hasRemaining()){
                     return;
                 }else{
                     it.remove();
+                    if(pair.getRight()!=null) pair.getRight().run();
                 }
             }
             if(!queue.isEmpty()) return;
