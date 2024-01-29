@@ -1,6 +1,7 @@
 package com.lvt4j.socketproxy;
 
-import static com.lvt4j.socketproxy.ProtocolService.Pws.TargetHeader;
+import static com.lvt4j.socketproxy.ProtocolService.Pws.Command_Close;
+import static com.lvt4j.socketproxy.ProtocolService.Pws.Header_Target;
 import static com.lvt4j.socketproxy.ProxyApp.format;
 import static com.lvt4j.socketproxy.ProxyApp.isCloseException;
 import static com.lvt4j.socketproxy.ProxyApp.port;
@@ -18,11 +19,14 @@ import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
@@ -260,9 +264,12 @@ public class TcpService implements InfoContributor {
             }
             
             private void destory() {
-                ProxyApp.close(src);
+                if(pwsProxy==null) ProxyApp.close(src);
+                else{
+                    pwsProxy.prepareCloseClient = true;
+                    pwsProxy.closeIfPossible();
+                }
                 ProxyApp.close(target);
-                if(pwsProxy!=null && pwsProxy.isOpen()) pwsProxy.close();
                 connections.remove(this);
                 
                 log.info("{} disconnected {}", shortDirection, direction);
@@ -270,8 +277,12 @@ public class TcpService implements InfoContributor {
             
             class PwsClient extends WebSocketClient {
 
+                private AtomicLong prepareWrite2SrcDataIder = new AtomicLong();
+                private Set<Long> prepareWrite2SrcDataIds = Collections.synchronizedSet(new HashSet<>());
+                private volatile boolean prepareCloseClient = false;
+                
                 public PwsClient(URI pwsServer) {
-                    super(Protocol.pws2ws(pwsServer), ImmutableMap.of(TargetHeader, targetConfig.toString()));
+                    super(Protocol.pws2ws(pwsServer), ImmutableMap.of(Header_Target, targetConfig.toString()));
                     connect();
                 }
                 @Override @SneakyThrows
@@ -284,8 +295,24 @@ public class TcpService implements InfoContributor {
                     
                     log.info("{} connected {}", shortDirection, direction);
                 }
+                /**
+                 * pws协议用字符串格式传递命令
+                 */
                 @Override
-                public void onMessage(String message) {}
+                public void onMessage(String message) {
+                    log.error("pws client ({})收到命令：{}", direction, message);
+                    switch(message){
+                    case Command_Close:
+                        destory();
+                        break;
+                    default:
+                        log.error("pws client ({})收到未知命令：{}", direction, message);
+                        break;
+                    }
+                }
+                /**
+                 * pws协议用byte[]格式传递数据
+                 */
                 @Override
                 public void onMessage(ByteBuffer bytes) {
                     dataFromTargetToSrc(bytes);
@@ -295,21 +322,40 @@ public class TcpService implements InfoContributor {
                     reader.readAny(src, buf, data->{
                         dataFromSrcToTarget(data);
                         srcRead(data);
-                    }, this::onError);
+                    }, e->{
+                        try{
+                            if(isOpen()) send(Command_Close);
+                        }catch(Exception ig){}
+                        onError(e);
+                    });
                 }
                 private void dataFromSrcToTarget(ByteBuffer buf) {
                     send(buf);
                     onTrans();
                 }
                 private void dataFromTargetToSrc(ByteBuffer buf) {
-                    writer.write(src, buf, this::onError);
+                    long prepareWrite2ClientDataId = prepareWrite2SrcDataIder.incrementAndGet();
+                    prepareWrite2SrcDataIds.add(prepareWrite2ClientDataId);
+                    writer.write(src, buf, ()->{
+                        prepareWrite2SrcDataIds.remove(prepareWrite2ClientDataId);
+                        closeIfPossible();
+                    }, this::onError);
                     onTrans();
                 }
                 @Override
-                public void onClose(int code, String reason, boolean remote) {}
+                public void onClose(int code, String reason, boolean remote) {
+                }
                 @Override
                 public void onError(Exception ex) {
+                    prepareWrite2SrcDataIds.clear();
                     onException(ex);
+                }
+                public void closeIfPossible() {
+                    if(!prepareCloseClient) return;
+                    if(!prepareWrite2SrcDataIds.isEmpty()) return;
+                    
+                    close();
+                    ProxyApp.close(src);
                 }
                 
             }

@@ -50,10 +50,17 @@ public class ProtocolService {
         public static final byte[] EstablishedHeaders = "HTTP/1.0 200 Connection established\r\nProxy-Agent: lvt4j-SocketProxy/1.0\r\n\r\n".getBytes();
     }
     public static class Pws {
+        
         /**
          * 请求头中携带目标服务地址
          */
-        public static final String TargetHeader = "Pws-Target";
+        public static final String Header_Target = "Pws-Target";
+        
+        /**
+         * String格式传递命令：连接关闭
+         */
+        public static final String Command_Close = "Close";
+        
     }
     
     @Autowired

@@ -1,6 +1,7 @@
 package com.lvt4j.socketproxy;
 
-import static com.lvt4j.socketproxy.ProtocolService.Pws.TargetHeader;
+import static com.lvt4j.socketproxy.ProtocolService.Pws.Command_Close;
+import static com.lvt4j.socketproxy.ProtocolService.Pws.Header_Target;
 import static com.lvt4j.socketproxy.ProxyApp.format;
 import static com.lvt4j.socketproxy.ProxyApp.isCloseException;
 import static com.lvt4j.socketproxy.ProxyApp.port;
@@ -16,11 +17,14 @@ import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
@@ -124,12 +128,18 @@ public class PwsService implements InfoContributor {
             if(cnn==null) return;
             cnn.destory();
         }
+        /**
+         * pws协议用字符串格式传递命令
+         */
         @Override
         public void onMessage(WebSocket client, String message) {
             ConnectMeta cnn = client.getAttachment();
             if(cnn==null) return;
-            log.warn("{} {} receive illegal string msg : {}", port, cnn.direction, message);
+            cnn.onCommand(message);
         }
+        /**
+         * pws协议用byte[]格式传递数据
+         */
         @Override
         public void onMessage(WebSocket client, ByteBuffer message) {
             ConnectMeta cnn = client.getAttachment();
@@ -147,8 +157,7 @@ public class PwsService implements InfoContributor {
             ImmutableSet.copyOf(connections).forEach(ConnectMeta::destory);
             try{
                 stop();
-            }catch(Exception ig){
-            }
+            }catch(Exception ig){}
             servers.remove(port);
             log.info("{} pws代理停止", port);
         }
@@ -183,13 +192,17 @@ public class PwsService implements InfoContributor {
             
             private long latestTouchTime = System.currentTimeMillis();
             
+            private AtomicLong prepareWrite2TargetDataIder = new AtomicLong();
+            private Set<Long> prepareWrite2TargetDataIds = Collections.synchronizedSet(new HashSet<>());
+            private volatile boolean prepareCloseClient = false;
+            
             public ConnectMeta(WebSocket client, ClientHandshake handshake) throws IOException {
                 this.client = client;
                 client.setAttachment(this);
                 
                 try{
-                    targetStr = handshake.getFieldValue(TargetHeader);
-                    if(StringUtils.isBlank(targetStr)) throw new IOException(format("websocket miss target header : %s", TargetHeader));
+                    targetStr = handshake.getFieldValue(Header_Target);
+                    if(StringUtils.isBlank(targetStr)) throw new IOException(format("websocket miss target header : %s", Header_Target));
                     HostAndPort targetConfig = ProxyApp.validHostPort(targetStr);
                     if(targetConfig==null) throw new IOException(format("websocket illegal target header : %s", targetStr));
                     
@@ -223,14 +236,35 @@ public class PwsService implements InfoContributor {
                 reader.readAny(target, buf, data->{
                     dataFromTargetToClient(data);
                     targetRead(data);
-                }, this::onException);
+                }, e->{
+                    try{
+                        if(client!=null && client.isOpen()) client.send(Command_Close);
+                    }catch(Exception ig){}
+                    onException(e);
+                });
             }
             private void dataFromTargetToClient(ByteBuffer buf) {
                 client.send(buf);
                 onTrans();
             }
+            private void onCommand(String message) {
+                log.error("pws server ({})收到命令：{}", direction, message);
+                switch(message){
+                case Command_Close:
+                    destory();
+                    break;
+                default:
+                    log.error("pws server ({})收到未知命令：{}", direction, message);
+                    break;
+                }
+            }
             private void dataFromClientToTarget(ByteBuffer buf) {
-                writer.write(target, buf, this::onException);
+                long prepareWrite2ClientDataId = prepareWrite2TargetDataIder.incrementAndGet();
+                prepareWrite2TargetDataIds.add(prepareWrite2ClientDataId);
+                writer.write(target, buf, ()->{
+                    prepareWrite2TargetDataIds.remove(prepareWrite2ClientDataId);
+                    closeIfPossible();
+                }, this::onException);
                 onTrans();
             }
             private void onTrans() {
@@ -239,15 +273,22 @@ public class PwsService implements InfoContributor {
             
             private synchronized void onException(Exception e) {
                 if(!isCloseException(e)) log.error("connection {} err", direction, e);
+                prepareWrite2TargetDataIds.clear();
                 destory();
             }
             
             private void destory() {
-                if(client!=null && client.isOpen()) client.close();
+                prepareCloseClient=true; closeIfPossible();
                 ProxyApp.close(target);
                 connections.remove(this);
                 
                 log.info("{} disconnected {}", port, direction);
+            }
+            public void closeIfPossible() {
+                if(!prepareCloseClient) return;
+                if(!prepareWrite2TargetDataIds.isEmpty()) return;
+                
+                if(client!=null && client.isOpen()) client.close();
             }
         }
     }
