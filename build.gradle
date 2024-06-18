@@ -122,7 +122,7 @@ tasks.register('release', Zip) {
     }
     
     from "$buildDir/release"
-    include "*.sh","proxy.jar","config/application.yml"
+    include "*.sh","*.bat","proxy.jar","config/application.yml"
     baseName "release"
     destinationDir file("$buildDir/release")
     
