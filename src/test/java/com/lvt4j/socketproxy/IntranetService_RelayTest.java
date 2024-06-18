@@ -3,16 +3,18 @@ package com.lvt4j.socketproxy;
 import static org.apache.commons.lang3.ArrayUtils.EMPTY_BYTE_ARRAY;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
-import java.io.IOException;
 import java.io.InputStream;
 import java.lang.Thread.UncaughtExceptionHandler;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketException;
 import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.lang3.ArrayUtils;
@@ -27,6 +29,7 @@ import com.google.common.primitives.Ints;
 import com.lvt4j.socketproxy.Config.IntranetConfig;
 import com.lvt4j.socketproxy.Config.IntranetConfig.Type;
 import com.lvt4j.socketproxy.IntranetService.MsgType;
+import com.lvt4j.socketproxy.IntranetService.Server;
 
 import lombok.SneakyThrows;
 
@@ -47,6 +50,8 @@ public class IntranetService_RelayTest extends BaseTest {
     
     private HostAndPort entryConfig;
     private HostAndPort targetConfig;
+    
+    private Map<?, Server> servers;
     
     private int targetPort;
     private ServerSocket targetServer;
@@ -70,6 +75,7 @@ public class IntranetService_RelayTest extends BaseTest {
     private List<Integer> entryReceiveLengths2;
     
     @Before
+    @SuppressWarnings("unchecked")
     public void before() throws Exception {
         targetPort = availablePort();
         entryPort = availablePort();
@@ -86,6 +92,8 @@ public class IntranetService_RelayTest extends BaseTest {
         relayConfig.type = Type.Relay;
         relayConfig.entry = entryConfig;
         relayConfig.target = targetConfig;
+        relayConfig.heartbeatInterval = TimeUnit.MINUTES.toMillis(5);
+        relayConfig.heartbeatMissTimeout = TimeUnit.MINUTES.toMillis(5);
         config.setIntranet(Arrays.asList(relayConfig));
         
         acceptor = new ChannelAcceptor(); invoke(acceptor, "init");
@@ -98,10 +106,12 @@ public class IntranetService_RelayTest extends BaseTest {
         FieldUtils.writeField(service, "delayRunner", delayRunner, true);
         
         invoke(service, "init");
+        
+        servers = (Map<?, Server>) FieldUtils.readField(service, "servers", true);
     }
     
     @After
-    public void after() throws IOException {
+    public void after() throws Throwable {
         if(acceptor!=null) invoke(acceptor, "destory");
         if(connector!=null) invoke(connector, "destory");
         if(delayRunner!=null) invoke(delayRunner, "destory");
@@ -208,6 +218,29 @@ public class IntranetService_RelayTest extends BaseTest {
         assertCnns(2);
     }
     
+    /**
+     * 长时间未收到entry心跳，relay server应当重试连接entry
+     * @throws Throwable
+     */
+    @Test(timeout=60000)
+    public void close_on_entry_heartbeat_timeout() throws Throwable {
+        config.setIntranet(Arrays.asList());
+        invoke(service, "init");
+        
+        relayConfig.heartbeatInterval = TimeUnit.SECONDS.toMillis(1);
+        relayConfig.heartbeatMissTimeout = TimeUnit.SECONDS.toMillis(5);
+        config.setIntranet(Arrays.asList(relayConfig));
+        invoke(service, "init");
+        
+        entry1 = entryServer.accept();
+        entry1.getOutputStream().write(MsgType.HeartBeat.Packet);
+        Thread.sleep(6000);
+        try{
+            entry1.getOutputStream().write(MsgType.HeartBeat.Packet);
+            assertTrue("entry1应当已被关闭", false);
+        }catch(SocketException e){}
+    }
+    
     private void trans(Socket entry) throws Throwable {
         int count = 10;
         
@@ -270,7 +303,7 @@ public class IntranetService_RelayTest extends BaseTest {
         }}; target2Sender.setUncaughtExceptionHandler(exHandler);
         Thread relayHeartbeatSender = new Thread("relayHeartbeatSender"){@SneakyThrows public void run() {
             for(int i=0; i<count; i++){
-                service.heartbeat();
+                servers.values().forEach(s->s.heartbeat());
                 Thread.sleep(10);
             }
         }}; relayHeartbeatSender.setUncaughtExceptionHandler(exHandler);

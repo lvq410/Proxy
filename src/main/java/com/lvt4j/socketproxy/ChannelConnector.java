@@ -21,7 +21,6 @@ import org.springframework.stereotype.Service;
 
 import com.lvt4j.socketproxy.ProxyApp.IOExceptionRunnable;
 
-import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -77,19 +76,23 @@ public class ChannelConnector extends Thread implements UncaughtExceptionHandler
         selector.wakeup();
     }
     
-    @Override @SneakyThrows
+    @Override
     public void run() {
-        while(selector.isOpen()){
-            selector.select();
-            Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
-            while(!registerQueue.isEmpty()) registerQueue.remove(0).run();
-            if(!selector.isOpen()) return;
-            while(keys.hasNext()){
-                SelectionKey key = keys.next();
-                keys.remove();
-                connect(key);
-                key.cancel();
+        try{
+            while(selector.isOpen()){
+                selector.select();
+                Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
+                while(!registerQueue.isEmpty()) registerQueue.remove(0).run();
+                if(!selector.isOpen()) return;
+                while(keys.hasNext()){
+                    SelectionKey key = keys.next();
+                    keys.remove();
+                    connect(key);
+                    key.cancel();
+                }
             }
+        }catch(Throwable e){
+            uncaughtException(this, e);
         }
     }
     private void connect(SelectionKey key) {

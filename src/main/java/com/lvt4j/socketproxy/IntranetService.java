@@ -3,7 +3,10 @@ package com.lvt4j.socketproxy;
 import static com.lvt4j.socketproxy.ProxyApp.format;
 import static com.lvt4j.socketproxy.ProxyApp.isCloseException;
 import static com.lvt4j.socketproxy.ProxyApp.port;
+import static java.net.InetAddress.getByName;
 import static java.util.stream.Collectors.joining;
+import static org.apache.commons.lang3.StringUtils.firstNonBlank;
+import static org.apache.commons.lang3.StringUtils.isBlank;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -21,6 +24,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Delayed;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -104,10 +108,6 @@ public class IntranetService implements InfoContributor {
     }
     
     @Scheduled(cron="0/10 * * * * ?")
-    public synchronized void heartbeat() {
-        servers.values().forEach(Server::heartbeat);
-    }
-    @Scheduled(cron="0/10 * * * * ?")
     public synchronized void cleanIdle() {
         servers.values().forEach(Server::cleanIdle);
     }
@@ -127,12 +127,13 @@ public class IntranetService implements InfoContributor {
         builder.withDetail("intranet", infos);
     }
 
-    private class EntryServer implements Server {
+    private class EntryServer extends Thread implements Server {
         private final IntranetConfig config;
         
         private final int relay;
         private final ServerSocketChannel relayServer;
         private SocketChannel relayer;
+        private long lastHeartBeatTime;
         
         private final int port;
         private final ServerSocketChannel server;
@@ -145,14 +146,18 @@ public class IntranetService implements InfoContributor {
         
         private Map<Integer, ConnectMeta> connections = new ConcurrentHashMap<>();
         
+        private volatile boolean destoried = false;
+        
         public EntryServer(IntranetConfig config) throws IOException {
             this.config = config;
             this.port = config.port;
             this.relay = config.relay;
             
             try{
-                server = ProxyApp.server(null, port);
-                relayServer = ProxyApp.server(null, relay);
+                String entryHost = firstNonBlank(config.getEntryHost(), config.getHost());
+                server = ProxyApp.server(isBlank(entryHost)?null:getByName(entryHost), port);
+                String relayHost = firstNonBlank(config.getRelayHost(), config.getHost());
+                relayServer = ProxyApp.server(isBlank(relayHost)?null:getByName(relayHost), relay);
                 
                 reader = new ChannelReader(); reader.init(port+" entry reader");
                 writer = new ChannelWriter(); writer.init(port+" entry writer");
@@ -161,18 +166,24 @@ public class IntranetService implements InfoContributor {
                 acceptor.accept(server, this::serverAccept, e->log.error("establish client connection err", e));
                 
                 direction = String.format("%s->%s", port, relay);
+                
+                setName("EntryServer:"+direction);
+                start();
             }catch(IOException e){
                 destory();
                 throw e;
             }
         }
         public synchronized void destory() {
+            destoried = true; interrupt(); try{ join(1000); }catch(Exception ig){}
             ImmutableSet.copyOf(connections.values()).forEach(ConnectMeta::destory);
-            ProxyApp.close(server);
-            ProxyApp.close(relayer);
-            ProxyApp.close(relayServer);
             if(reader!=null) reader.destory();
             if(writer!=null) writer.destory();
+            ProxyApp.close(server);
+            acceptor.waitDeregister(server);
+            ProxyApp.close(relayer); relayer=null;
+            ProxyApp.close(relayServer);
+            acceptor.waitDeregister(relayServer);
             servers.remove(config);
             log.info("{} intranet entry停止", port);
         }
@@ -183,6 +194,7 @@ public class IntranetService implements InfoContributor {
             }catch(Exception ig){}
             relayDestory();
             relayer.configureBlocking(false);
+            lastHeartBeatTime = System.currentTimeMillis();
             this.relayer = relayer;
             direction = String.format("%s->%s->%s", port, relay, format(relayer.getRemoteAddress()));
             relayRead();
@@ -191,6 +203,7 @@ public class IntranetService implements InfoContributor {
             reader.readOne(relayer, type->{
                 switch(type){
                 case MsgType.HeartBeat.Type:
+                    lastHeartBeatTime = System.currentTimeMillis();
                     relayRead();
                     break;
                 case MsgType.Transmit.Type:
@@ -254,8 +267,21 @@ public class IntranetService implements InfoContributor {
             connections.put(id, new ConnectMeta(id, client));
         }
         
+        public void run() {
+            while(!destoried){
+                try{
+                    sleep(config.getHeartbeatInterval());
+                    heartbeat();
+                }catch(InterruptedException ig){}
+            }
+        }
+        
         public synchronized void heartbeat() {
             if(relayer==null) return;
+            if(System.currentTimeMillis()-lastHeartBeatTime>=config.getHeartbeatMissTimeout()) {
+                relayException(new TimeoutException("超时未收到relayer心跳"));
+                return;
+            }
             writer.write(relayer, MsgType.HeartBeat.Packet, this::relayException);
         }
         @Override
@@ -351,7 +377,7 @@ public class IntranetService implements InfoContributor {
         }
     }
     
-    private class RelayServer implements Server {
+    private class RelayServer extends Thread implements Server {
         private final IntranetConfig config;
         
         private final HostAndPort entryConfig;
@@ -363,10 +389,13 @@ public class IntranetService implements InfoContributor {
         private Delayed entryConnectRetryDelay;
         
         private SocketChannel entry;
+        private long lastHeartBeatTime;
         
         private String direction;
         
         private Map<Integer, ConnectMeta> connections = new ConcurrentHashMap<>();
+        
+        private volatile boolean destoried = false;
         
         public RelayServer(IntranetConfig config) throws IOException {
             this.config = config;
@@ -380,6 +409,9 @@ public class IntranetService implements InfoContributor {
                 direction = String.format("%s->%s->port->%s", entryConfig, "connecting", targetConfig);
                 
                 entryConnectBegin();
+                
+                setName("RelayServer:"+direction);
+                start();
             }catch(Exception e){
                 destory();
                 throw e;
@@ -407,6 +439,7 @@ public class IntranetService implements InfoContributor {
         }
         private synchronized void entryConnected(SocketChannel entry) throws IOException {
             direction = String.format("%s->%s->port->%s", entryConfig, port(entry.getLocalAddress()), targetConfig);
+            lastHeartBeatTime = System.currentTimeMillis();
             this.entry = entry;
             log.info("与entry({}<->{})服务连接建立", entryConfig, port(entry.getLocalAddress()));
             entryRead();
@@ -415,6 +448,7 @@ public class IntranetService implements InfoContributor {
             reader.readOne(entry, type->{
                 switch(type){
                 case MsgType.HeartBeat.Type:
+                    lastHeartBeatTime = System.currentTimeMillis();
                     entryRead();
                     break;
                 case MsgType.Transmit.Type:
@@ -475,14 +509,27 @@ public class IntranetService implements InfoContributor {
             if(entry==null) throw new IOException("入口服务未连接");
         }
         
+        public void run() {
+            while(!destoried){
+                try{
+                    sleep(config.getHeartbeatInterval());
+                    heartbeat();
+                }catch(InterruptedException ig){}
+            }
+        }
         public synchronized void heartbeat() {
             if(entry==null) return;
+            if(System.currentTimeMillis() - lastHeartBeatTime >= config.getHeartbeatMissTimeout()){
+                entryOnException(new TimeoutException("超时未收到entry心跳"));
+                return;
+            }
             writer.write(entry, MsgType.HeartBeat.Packet, this::entryOnException);
         }
         
         public synchronized void destory() {
-            delayRunner.cancel(entryConnectRetryDelay);
+            destoried = true; interrupt(); try{ join(1000); }catch(Exception ig){}
             ImmutableSet.copyOf(connections.values()).forEach(ConnectMeta::destory);
+            delayRunner.cancel(entryConnectRetryDelay);
             ProxyApp.close(entry); entry = null;
             if(reader!=null) reader.destory();
             if(writer!=null) writer.destory();
@@ -573,7 +620,7 @@ public class IntranetService implements InfoContributor {
         }
     }
     
-    private interface Server {
+    interface Server {
         public void heartbeat();
         public void cleanIdle();
         public String info();

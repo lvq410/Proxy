@@ -24,7 +24,6 @@ import org.springframework.stereotype.Service;
 import com.lvt4j.socketproxy.ProxyApp.IOExceptionRunnable;
 
 import lombok.NonNull;
-import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -118,18 +117,22 @@ public class ChannelWriter extends Thread implements UncaughtExceptionHandler {
         selector.wakeup();
     }
     
-    @Override @SneakyThrows
+    @Override
     public void run() {
-        while(selector.isOpen()){
-            selector.select();
-            while(!registerQueue.isEmpty()) registerQueue.remove(0).run();
-            Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
-            if(!selector.isOpen()) return;
-            while(keys.hasNext()){
-                SelectionKey key = keys.next();
-                keys.remove();
-                write(key);
+        try{
+            while(selector.isOpen()){
+                selector.select();
+                while(!registerQueue.isEmpty()) registerQueue.remove(0).run();
+                Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
+                if(!selector.isOpen()) return;
+                while(keys.hasNext()){
+                    SelectionKey key = keys.next();
+                    keys.remove();
+                    write(key);
+                }
             }
+        }catch(Throwable e){
+            uncaughtException(this, e);
         }
     }
     private void write(SelectionKey key) {

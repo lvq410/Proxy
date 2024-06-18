@@ -1,5 +1,5 @@
 management:
-  server.port: 81
+  server.port: 8081
   endpoints:
     enabled-by-default: true
     web.exposure.include: "*"
@@ -13,8 +13,10 @@ server.port: ${management.server.port}
 
 spring:
   main:
+    web-application-type: none
     banner-mode: "OFF"
   application.name: proxy
+  pid.file: pid
   boot.admin.client:
     enabled: false
     url: http://localhost:25020
@@ -27,7 +29,9 @@ logging:
   level:
     root: info
 
+#连接多久没有数据传输就断开连接
 maxIdleTime: 60000
+
 tcp:
 #- port: 80
 #  host: bind-host

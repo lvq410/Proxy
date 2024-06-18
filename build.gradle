@@ -87,7 +87,7 @@ dependencies {
     compileOnly 'org.projectlombok:lombok:1.18.6'
 
     api 'com.google.guava:guava:16.0.1'
-    api 'org.apache.commons:commons-lang3:3.4'
+    api 'org.apache.commons:commons-lang3:3.8.1'
     api 'commons-configuration:commons-configuration:1.10'
     api 'commons-io:commons-io:2.5'
     api 'org.apache.commons:commons-collections4:4.3'
@@ -111,7 +111,9 @@ tasks.register('release', Zip) {
     
     doFirst {
         copy {
+            from "$projectDir/start.bat"
             from "$projectDir/start.sh"
+            from "$projectDir/stop.bat"
             from "$projectDir/stop.sh"
             from "$projectDir/restart.sh"
             from "$buildDir/libs/proxy.jar"

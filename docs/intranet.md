@@ -46,6 +46,9 @@ intranet:
 - type: entry
   port: 3306    #接收请求者A请求的服务端口号
   relay: 82   #接收转发服务E建立连接的服务端口号
+  #host: null #端口绑定的地址，默认空也即本机全地址
+  #heartbeatInterval: 10000 #entry向relay服务发送心跳的间隔
+  #heartbeatMissTimeout: 60000 #多久未收到relay发来的心跳时，会认为relay已失联
 
 #目标服务机器或与其在同一局域网的转发服务E
 intranet:

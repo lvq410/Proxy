@@ -1,3 +1,9 @@
+#!/bin/sh
+
+#切换至脚本所在目录
+shellDir=`dirname $0`
+cd $shellDir
+
 if [ ! -f "./pid" ]; then
   echo '服务未运行'
   exit 0
@@ -14,6 +20,11 @@ do
 
 echo '等待服务关停中，剩余'$((10-i))'s'
 sleep 1
-let i++
+((i++))
 done
 
+if [ -f "./pid" ]; then
+  echo '服务关停超时，强杀'
+  kill -9 $pid
+  rm -f ./pid
+fi

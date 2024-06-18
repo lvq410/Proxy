@@ -6,6 +6,7 @@ import static java.util.Collections.emptyList;
 import java.net.InetAddress;
 import java.net.URI;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import javax.annotation.PreDestroy;
 
@@ -151,15 +152,26 @@ public class Config {
         
         public Type type;
         
+        /** 入口服务配置，端口默认绑定的地址 */
+        public String host;
         /** 入口服务配置，通过本端口接收客户端请求 */
         public Integer port;
+        /** 入口服务配置，{@link #port}绑定的地址，为空时取{@link #host} */
+        public String entryHost;
         /** 入口服务配置，转发服务通过本端口与入口服务建立连接 */
         public Integer relay;
+        /** 入口服务配置，{@link #relay}绑定的地址，为空时取{@link #host} */
+        public String relayHost;
         
         /** 转发服务配置，入口服务地址 */
         public HostAndPort entry;
         /** 转发服务配置，目标服务地址 */
         public HostAndPort target;
+        
+        /** 心跳间隔 */
+        public Long heartbeatInterval = TimeUnit.SECONDS.toMillis(10);
+        /** 多久没收到心跳时断开连接 */
+        public Long heartbeatMissTimeout = TimeUnit.MINUTES.toMillis(1);
         
         public void setEntry(String entry) {
             this.entry = ProxyApp.validHostPort(entry);

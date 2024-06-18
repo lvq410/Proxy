@@ -1,0 +1,1 @@
+start /B javaw -Dfile.encoding=utf8 -Xmx128m -jar proxy.jar

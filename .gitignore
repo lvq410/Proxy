@@ -19,9 +19,8 @@ gradlew.bat
 /build/
 
 #app
-applicationPid
+pid
 /config/
 /test/
 /logs/
 *.log
-application.pid

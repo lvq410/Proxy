@@ -18,6 +18,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.lang3.ArrayUtils;
@@ -31,6 +32,7 @@ import com.google.common.primitives.Ints;
 import com.lvt4j.socketproxy.Config.IntranetConfig;
 import com.lvt4j.socketproxy.Config.IntranetConfig.Type;
 import com.lvt4j.socketproxy.IntranetService.MsgType;
+import com.lvt4j.socketproxy.IntranetService.Server;
 
 import lombok.Cleanup;
 import lombok.SneakyThrows;
@@ -52,6 +54,8 @@ public class IntranetService_EntryTest extends BaseTest {
     private int port;
     private int relay;
     
+    private Map<?, Server> servers;
+    
     private Socket client1;
     private List<Integer> client1SendLengths;
     private byte[] client1SendData;
@@ -71,6 +75,7 @@ public class IntranetService_EntryTest extends BaseTest {
     
     
     @Before
+    @SuppressWarnings("unchecked")
     public void before() throws Exception {
         port = availablePort();
         relay = availablePort();
@@ -79,8 +84,11 @@ public class IntranetService_EntryTest extends BaseTest {
         config = new Config();
         entryConfig = new IntranetConfig();
         entryConfig.type = Type.Entry;
+        entryConfig.host = "127.0.0.1";
         entryConfig.port = port;
         entryConfig.relay = relay;
+        entryConfig.heartbeatInterval = TimeUnit.MINUTES.toMillis(5);
+        entryConfig.heartbeatMissTimeout = TimeUnit.MINUTES.toMillis(5);
         config.setIntranet(Arrays.asList(entryConfig));
         
         acceptor = new ChannelAcceptor(); invoke(acceptor, "init");
@@ -91,12 +99,14 @@ public class IntranetService_EntryTest extends BaseTest {
         FieldUtils.writeField(service, "connector", connector, true);
         
         invoke(service, "init");
+        
+        servers = (Map<?, Server>) FieldUtils.readField(service, "servers", true);
     }
     private void initClient() throws Exception {
         client1 = new Socket("127.0.0.1", port);
         client2 = new Socket("127.0.0.1", port);
     }
-    private void initRelayer() throws Exception {
+    private void initRelayer1() throws Exception {
         relay1 = new Socket("127.0.0.1", relay);
         relaySendData1 = relayReceiveData1 = EMPTY_BYTE_ARRAY;
         relaySendData2 = relayReceiveData2 = EMPTY_BYTE_ARRAY;
@@ -125,7 +135,6 @@ public class IntranetService_EntryTest extends BaseTest {
     
     @Test(timeout=10000)
     public void reload() throws Throwable {
-        Map<?, ?> servers = (Map<?, ?>) FieldUtils.readField(service, "servers", true);
         assertEquals(1, servers.size());
         
         IntranetConfig entryConfig2 = new IntranetConfig();
@@ -148,7 +157,7 @@ public class IntranetService_EntryTest extends BaseTest {
     public void cleanIdle() throws Throwable {
         config.setMaxIdleTime(1);
         
-        initRelayer(); initClient();
+        initRelayer1(); initClient();
         
         assertCnns(2);
         
@@ -165,7 +174,7 @@ public class IntranetService_EntryTest extends BaseTest {
     
     @Test(timeout=60000)
     public void trans() throws Throwable {
-        initRelayer(); initClient();
+        initRelayer1(); initClient();
         
         assertCnns(2);
         
@@ -185,9 +194,33 @@ public class IntranetService_EntryTest extends BaseTest {
         
         trans(relay2, 2);
     }
+    /**
+     * relay长时间未发送心跳，entry server应当主动关闭连接
+     */
+    @Test(timeout=60000)
+    public void close_on_relay_heartbeat_timeout() throws Throwable {
+        config.setIntranet(Arrays.asList());
+        invoke(service, "reloadConfig");
+        
+        entryConfig.heartbeatInterval = TimeUnit.SECONDS.toMillis(1);
+        entryConfig.heartbeatMissTimeout = TimeUnit.SECONDS.toMillis(5);
+        config.setIntranet(Arrays.asList(entryConfig));
+        invoke(service, "reloadConfig");
+        
+        assertEquals(1, servers.size());
+        
+        initRelayer1(); initClient();
+        
+        assertCnns(2);
+        
+        Thread.sleep(8000);
+        
+        assertCnns(0);
+    }
+    
     @Test(timeout=60000)
     public void client_close_or_relayer_reconnect() throws Throwable {
-        initRelayer(); initClient();
+        initRelayer1(); initClient();
         
         assertCnns(2);
         
@@ -222,7 +255,7 @@ public class IntranetService_EntryTest extends BaseTest {
      */
     @Test
     public void relayer_trans_then_close_immediate() throws Throwable {
-        initRelayer();
+        initRelayer1();
         client1 = new Socket("127.0.0.1", port);
         
         client1.getOutputStream().write("hello".getBytes());
@@ -316,7 +349,7 @@ public class IntranetService_EntryTest extends BaseTest {
         }}; client2Sender.setUncaughtExceptionHandler(exHandler);
         Thread entryHeartbeatSender = new Thread("entryHeartbeatSender"){@SneakyThrows public void run() {
             for(int i=0; i<count; i++){
-                service.heartbeat();
+                servers.values().forEach(Server::heartbeat);
                 Thread.sleep(10);
             }
         }}; entryHeartbeatSender.setUncaughtExceptionHandler(exHandler);

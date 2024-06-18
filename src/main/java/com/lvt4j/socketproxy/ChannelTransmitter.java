@@ -17,7 +17,6 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.function.Consumer;
 
-import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -63,18 +62,22 @@ public class ChannelTransmitter extends Thread implements UncaughtExceptionHandl
         selector.wakeup();
     }
     
-    @Override @SneakyThrows
+    @Override
     public void run() {
-        while(selector.isOpen()){
-            selector.select();
-            Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
-            while(!registerQueue.isEmpty()) registerQueue.remove(0).run();
-            if(!selector.isOpen()) return;
-            while(keys.hasNext()){
-                SelectionKey key = keys.next();
-                keys.remove();
-                trans(key);
+        try{
+            while(selector.isOpen()){
+                selector.select();
+                Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
+                while(!registerQueue.isEmpty()) registerQueue.remove(0).run();
+                if(!selector.isOpen()) return;
+                while(keys.hasNext()){
+                    SelectionKey key = keys.next();
+                    keys.remove();
+                    trans(key);
+                }
             }
+        }catch(Throwable e){
+            uncaughtException(this, e);
         }
     }
     private void trans(SelectionKey key) {

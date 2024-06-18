@@ -24,7 +24,6 @@ import org.springframework.stereotype.Service;
 
 import com.lvt4j.socketproxy.ProxyApp.IOExceptionConsumer;
 
-import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -150,18 +149,22 @@ public class ChannelReader extends Thread implements UncaughtExceptionHandler {
         }
     }
     
-    @Override @SneakyThrows
+    @Override
     public void run() {
-        while(selector.isOpen()){
-            selector.select();
-            Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
-            while(!registerQueue.isEmpty()) registerQueue.remove(0).run();
-            if(!selector.isOpen()) return;
-            while(keys.hasNext()){
-                SelectionKey key = keys.next();
-                keys.remove();
-                read(key);
+        try{
+            while(selector.isOpen()){
+                selector.select();
+                Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
+                while(!registerQueue.isEmpty()) registerQueue.remove(0).run();
+                if(!selector.isOpen()) return;
+                while(keys.hasNext()){
+                    SelectionKey key = keys.next();
+                    keys.remove();
+                    read(key);
+                }
             }
+        }catch(Throwable e){
+            uncaughtException(this, e);
         }
     }
     private void read(SelectionKey key) {
