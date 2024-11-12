@@ -9,6 +9,7 @@ import static java.util.stream.Collectors.groupingBy;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.mapping;
 import static java.util.stream.Collectors.toList;
+import static org.springframework.http.HttpHeaders.AUTHORIZATION;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -17,6 +18,7 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -30,9 +32,11 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
+import javax.security.sasl.AuthenticationException;
 
 import org.apache.commons.lang3.StringUtils;
 import org.java_websocket.client.WebSocketClient;
+import org.java_websocket.framing.CloseFrame;
 import org.java_websocket.handshake.ServerHandshake;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.info.Info.Builder;
@@ -40,7 +44,6 @@ import org.springframework.boot.actuate.info.InfoContributor;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.net.HostAndPort;
 import com.lvt4j.socketproxy.Config.TcpConfig;
@@ -274,7 +277,12 @@ public class TcpService implements InfoContributor {
                 
                 log.info("{} disconnected {}", shortDirection, direction);
             }
-            
+            private Map<String, String> pws_headers(URI pwsServer){
+                Map<String, String> headers = new HashMap<>();
+                headers.put(Header_Target, targetConfig.toString());
+                if(pwsServer.getUserInfo()!=null) headers.put(AUTHORIZATION, "Basic "+Base64.getEncoder().encodeToString(pwsServer.getUserInfo().getBytes()));
+                return headers;
+            }
             class PwsClient extends WebSocketClient {
 
                 private AtomicLong prepareWrite2SrcDataIder = new AtomicLong();
@@ -282,9 +290,10 @@ public class TcpService implements InfoContributor {
                 private volatile boolean prepareCloseClient = false;
                 
                 public PwsClient(URI pwsServer) {
-                    super(Protocol.pws2ws(pwsServer), ImmutableMap.of(Header_Target, targetConfig.toString()));
+                    super(Protocol.pws2ws(pwsServer), pws_headers(pwsServer));
                     connect();
                 }
+                
                 @Override @SneakyThrows
                 public void onOpen(ServerHandshake handshakedata) {
                     direction = String.format("%s->%s->%s->%s"
@@ -344,6 +353,8 @@ public class TcpService implements InfoContributor {
                 }
                 @Override
                 public void onClose(int code, String reason, boolean remote) {
+                    if(CloseFrame.NORMAL==code) return;
+                    onError(new AuthenticationException("pws链接非正常关闭：code="+code+",reason="+reason+",remote="+remote));
                 }
                 @Override
                 public void onError(Exception ex) {

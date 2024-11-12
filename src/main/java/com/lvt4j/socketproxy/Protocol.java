@@ -25,6 +25,6 @@ public enum Protocol {
     
     @SneakyThrows
     public static URI pws2ws(URI uri) {
-        return new URI(uri.getScheme().replace("p", ""), null, uri.getHost(), uri.getPort(), uri.getPath(), uri.getQuery(), uri.getFragment());
+        return new URI(uri.getScheme().replace("p", ""), uri.getUserInfo(), uri.getHost(), uri.getPort(), uri.getPath(), uri.getQuery(), uri.getFragment());
     }
 }

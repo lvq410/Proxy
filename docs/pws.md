@@ -44,4 +44,5 @@ tcp:
   target: B:3306
   proxy: pws://C:80 
 #  proxy: pwss://C:443 #如果网关限制的是仅https协议，则配置成pwss即可
+#  proxy: pws://username:password@C:80 #如果网关C有轻量http认证时，可在url中增加认证信息
 ```
