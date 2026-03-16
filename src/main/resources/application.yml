@@ -43,6 +43,11 @@ tcp:
 
 socks5:
 #- 1080
+#  或
+#- port: 1080
+#  udpAdvertiseHost: 1.2.3.4
+#  udpPortMin: 10000
+#  udpPortMax: 20000
 
 http:
 #- 80

@@ -3,7 +3,7 @@ socks5是最常见的代理协议之一了，本项目也实现了socks5的一�
 
 * 仅socks5版本
 * 仅支持无身份认证
-* 仅支持CONNECT请求，BIND请求与UDP转发不支持
+* 支持CONNECT请求和UDP ASSOCIATE，BIND请求不支持
 
 假设有请求者`A`，且`A`有socks5客户端的功能。另有服务器`B`在`8080`端口上对外提供服务。但因为网络问题，`A`无法直接访问到`B`。
 
@@ -11,11 +11,34 @@ socks5是最常见的代理协议之一了，本项目也实现了socks5的一�
 
 则`A`可以配置使用`C`上的代理服务，来访问`B:8080`
 
-配置代码例
+最简配置（兼容旧格式，UDP中继使用默认配置）
 ```
 socks5:
 - 1080
 ```
+
+完整配置（自定义UDP中继参数）
+```
+socks5:
+- port: 1080
+  udpAdvertiseHost: 1.2.3.4
+  udpPortMin: 10000
+  udpPortMax: 20000
+```
+
+也支持混合配置
+```
+socks5:
+- 1080
+- port: 1081
+  udpPortMin: 10000
+  udpPortMax: 20000
+```
+
+配置说明：
+* `port`：监听端口，必填
+* `udpAdvertiseHost`：UDP中继对外通告的地址，可选。为空时取TCP连接的本地地址。在NAT或多网卡环境下，可能需要手动指定客户端能访问到的地址
+* `udpPortMin`/`udpPortMax`：UDP中继端口范围（含两端），可选。为空时由系统自动分配。配置后便于防火墙规则管理，两者必须同时配置
 
 ## chrome使用代理
 chrome要使用代理需要安装代理类插件，如[Proxy SwitchyOmega](https://chrome.google.com/webstore/detail/proxy-switchyomega/padekgcemlokbadohgkifijomclgjgif?hl=zh)

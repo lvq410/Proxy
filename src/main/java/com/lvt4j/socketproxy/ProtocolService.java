@@ -10,6 +10,7 @@ import java.net.InetSocketAddress;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URL;
+import java.nio.channels.DatagramChannel;
 import java.nio.channels.SocketChannel;
 import java.util.Arrays;
 import java.util.function.Consumer;
@@ -36,12 +37,25 @@ public class ProtocolService {
 
     public static class Socks5 {
         public static final byte NoAuth = 0;
-        
+
         public static final byte[] NoAcc = {5, -1};
         public static final byte[] Acc = {5, 0};
-        
+
         public static final byte[] Fail = {5,1,0,1, 0,0,0,0, 0,0};
         public static final byte[] Suc = {5,0,0,1, 0,0,0,0, 0,0};
+
+        /** 构造带实际地址的SOCKS5成功响应 {VER=5, REP=0, RSV=0, ATYP, BND.ADDR, BND.PORT} */
+        public static byte[] buildResponse(InetSocketAddress boundAddr) {
+            byte[] addr = boundAddr.getAddress().getAddress();
+            byte atyp = (addr.length==4) ? (byte)1 : (byte)4;
+            byte[] response = new byte[4+addr.length+2];
+            response[0] = 5; response[1] = 0; response[2] = 0; response[3] = atyp;
+            System.arraycopy(addr, 0, response, 4, addr.length);
+            int port = boundAddr.getPort();
+            response[response.length-2] = (byte)(port>>8);
+            response[response.length-1] = (byte)(port&0xFF);
+            return response;
+        }
     }
     public static class Http {
         public static final byte LineFeed = '\n';
@@ -197,7 +211,14 @@ public class ProtocolService {
      */
     public void socks5_server_connect(SocketChannel client,
             IOExceptionConsumer<SocketChannel> onConnect, Consumer<Exception> exHandler) {
-        socks5_server_handshake(client, onConnect, exHandler);
+        socks5_server_connect(client, onConnect, null, null, null, null, exHandler);
+    }
+    public void socks5_server_connect(SocketChannel client,
+            IOExceptionConsumer<SocketChannel> onConnect,
+            String udpAdvertiseHost, Integer udpPortMin, Integer udpPortMax,
+            IOExceptionConsumer<DatagramChannel> onUdpAssociate,
+            Consumer<Exception> exHandler) {
+        socks5_server_handshake(client, onConnect, udpAdvertiseHost, udpPortMin, udpPortMax, onUdpAssociate, exHandler);
     }
     /**
      * 握手阶段：获取认证方法 并 响应是否进入认证阶段，或无需认证跳过认证阶段
@@ -225,7 +246,10 @@ public class ProtocolService {
      * @param exHandler
      */
     private void socks5_server_handshake(SocketChannel client,
-            IOExceptionConsumer<SocketChannel> onConnect, Consumer<Exception> exHandler) {
+            IOExceptionConsumer<SocketChannel> onConnect,
+            String udpAdvertiseHost, Integer udpPortMin, Integer udpPortMax,
+            IOExceptionConsumer<DatagramChannel> onUdpAssociate,
+            Consumer<Exception> exHandler) {
         reader.readOne(client, ver->{
             if(ver!=5){ //仅支持socket版本5
                 writer.write(client, Socks5.NoAcc, ()->exHandler.accept(new IOException(format("no acceptable socket ver : %s", ver))), exHandler);
@@ -241,7 +265,7 @@ public class ProtocolService {
                         writer.write(client, Socks5.NoAcc, ()->exHandler.accept(new IOException(format("only accept no auth but : %s", Arrays.toString(methods)))), exHandler);
                         return;
                     }
-                    writer.write(client, Socks5.Acc, ()->socks5_server_read_target(client, onConnect, exHandler), exHandler);
+                    writer.write(client, Socks5.Acc, ()->socks5_server_read_target(client, onConnect, udpAdvertiseHost, udpPortMin, udpPortMax, onUdpAssociate, exHandler), exHandler);
                 }, exHandler);
             }, exHandler);
         }, exHandler);
@@ -283,60 +307,128 @@ public class ProtocolService {
      * </pre>
      */
     private void socks5_server_read_target(SocketChannel client,
-            IOExceptionConsumer<SocketChannel> onConnect, Consumer<Exception> exHandler) {
+            IOExceptionConsumer<SocketChannel> onConnect,
+            String udpAdvertiseHost, Integer udpPortMin, Integer udpPortMax,
+            IOExceptionConsumer<DatagramChannel> onUdpAssociate,
+            Consumer<Exception> exHandler) {
         reader.readOne(client, ver->{
             if(ver!=5){ //仅支持socket版本5
                 writer.write(client, Socks5.Fail, ()->exHandler.accept(new IOException(format("no acceptable socket ver : %s", ver))), exHandler);
                 return;
             }
             reader.readOne(client, cmd->{
-                if(cmd!=1){ //仅支持CONNECT请求
+                switch(cmd){
+                case 1: //CONNECT请求
+                    reader.readOne(client, rsv->{
+                        socks5_server_read_atyp(client, (host, port)->socks5_server_target_connect(client, host, port, onConnect, exHandler), exHandler);
+                    }, exHandler);
+                    break;
+                case 3: //UDP ASSOCIATE
+                    if(onUdpAssociate==null){
+                        writer.write(client, Socks5.Fail, ()->exHandler.accept(new IOException("UDP ASSOCIATE not supported")), exHandler);
+                        return;
+                    }
+                    reader.readOne(client, rsv->{
+                        socks5_server_read_atyp(client, (host, port)->{
+                            socks5_server_udp_associate(client, udpAdvertiseHost, udpPortMin, udpPortMax, onUdpAssociate, exHandler);
+                        }, exHandler);
+                    }, exHandler);
+                    break;
+                default:
                     writer.write(client, Socks5.Fail, ()->exHandler.accept(new IOException(format("no acceptable cmd : %s", cmd))), exHandler);
                     return;
                 }
-                reader.readOne(client, rsv->{
-                    reader.readOne(client, atyp->{
-                        switch(atyp){
-                        case 1: //ipv4
-                            reader.readUntilLength(client, 4, ipv4->{
-                                InetAddress host = Inet4Address.getByAddress(ipv4);
-                                socks5_server_read_target_port(client, host, onConnect, exHandler);
-                            }, exHandler);
-                            break;
-                        case 3: //域名
-                            reader.readOne(client, len->{
-                                if(len==0){
-                                    writer.write(client, Socks5.Fail, ()->exHandler.accept(new IOException(format("no acceptable domain len : %s", len))), exHandler);
-                                    return;
-                                }
-                                reader.readUntilLength(client, Byte.toUnsignedInt(len), domainBs->{
-                                    String domain = new String(domainBs);
-                                    InetAddress host = InetAddress.getByName(domain);
-                                    socks5_server_read_target_port(client, host, onConnect, exHandler);
-                                }, exHandler);
-                            }, exHandler);
-                            break;
-                        case 4: //ipv6
-                            reader.readUntilLength(client, 16, ipv6->{
-                                InetAddress host = Inet6Address.getByAddress(ipv6);
-                                socks5_server_read_target_port(client, host, onConnect, exHandler);
-                            }, exHandler);
-                            break;
-                        default:
-                            writer.write(client, Socks5.Fail, ()->exHandler.accept(new IOException(format("no acceptable addr type : %s", atyp))), exHandler);
-                            return;
-                        }
-                    }, exHandler);
-                }, exHandler);
             }, exHandler);
         }, exHandler);
     }
-    private void socks5_server_read_target_port(SocketChannel client, InetAddress host,
-            IOExceptionConsumer<SocketChannel> onConnect, Consumer<Exception> exHandler) {
-        reader.readUntilLength(client, 2, portBs->{
-            int port = Short.toUnsignedInt(Shorts.fromByteArray(portBs));
-            socks5_server_target_connect(client, host, port, onConnect, exHandler);
+    /** 读取ATYP + DST.ADDR + DST.PORT，解析后回调 */
+    private void socks5_server_read_atyp(SocketChannel client,
+            IoExceptionBiConsumer<InetAddress, Integer> onParsed, Consumer<Exception> exHandler) {
+        reader.readOne(client, atyp->{
+            switch(atyp){
+            case 1: //ipv4
+                reader.readUntilLength(client, 4, ipv4->{
+                    InetAddress host = Inet4Address.getByAddress(ipv4);
+                    reader.readUntilLength(client, 2, portBs->{
+                        onParsed.accept(host, Short.toUnsignedInt(Shorts.fromByteArray(portBs)));
+                    }, exHandler);
+                }, exHandler);
+                break;
+            case 3: //域名
+                reader.readOne(client, len->{
+                    if(len==0){
+                        writer.write(client, Socks5.Fail, ()->exHandler.accept(new IOException(format("no acceptable domain len : %s", len))), exHandler);
+                        return;
+                    }
+                    reader.readUntilLength(client, Byte.toUnsignedInt(len), domainBs->{
+                        String domain = new String(domainBs);
+                        InetAddress host = InetAddress.getByName(domain);
+                        reader.readUntilLength(client, 2, portBs->{
+                            onParsed.accept(host, Short.toUnsignedInt(Shorts.fromByteArray(portBs)));
+                        }, exHandler);
+                    }, exHandler);
+                }, exHandler);
+                break;
+            case 4: //ipv6
+                reader.readUntilLength(client, 16, ipv6->{
+                    InetAddress host = Inet6Address.getByAddress(ipv6);
+                    reader.readUntilLength(client, 2, portBs->{
+                        onParsed.accept(host, Short.toUnsignedInt(Shorts.fromByteArray(portBs)));
+                    }, exHandler);
+                }, exHandler);
+                break;
+            default:
+                writer.write(client, Socks5.Fail, ()->exHandler.accept(new IOException(format("no acceptable addr type : %s", atyp))), exHandler);
+                return;
+            }
         }, exHandler);
+    }
+    private void socks5_server_udp_associate(SocketChannel client,
+            String udpAdvertiseHost, Integer udpPortMin, Integer udpPortMax,
+            IOExceptionConsumer<DatagramChannel> onUdpAssociate,
+            Consumer<Exception> exHandler) {
+        try{
+            InetAddress bindAddr;
+            if(udpAdvertiseHost!=null){
+                bindAddr = InetAddress.getByName(udpAdvertiseHost);
+            }else{
+                bindAddr = ((InetSocketAddress)client.getLocalAddress()).getAddress();
+            }
+
+            DatagramChannel udpChannel = DatagramChannel.open();
+            udpChannel.configureBlocking(false);
+
+            Consumer<Exception> closeExHandler = e->{
+                ProxyApp.close(udpChannel);
+                exHandler.accept(e);
+            };
+
+            if(udpPortMin!=null){
+                boolean bound = false;
+                for(int p=udpPortMin; p<=udpPortMax; p++){
+                    try{
+                        udpChannel.bind(new InetSocketAddress(bindAddr, p));
+                        bound = true;
+                        break;
+                    }catch(IOException ig){}
+                }
+                if(!bound){
+                    closeExHandler.accept(new IOException(format("UDP端口范围[%d,%d]内无可用端口", udpPortMin, udpPortMax)));
+                    return;
+                }
+            }else{
+                udpChannel.bind(new InetSocketAddress(bindAddr, 0));
+            }
+
+            InetSocketAddress boundAddr = (InetSocketAddress) udpChannel.getLocalAddress();
+            InetSocketAddress advertiseAddr = udpAdvertiseHost!=null
+                ? new InetSocketAddress(InetAddress.getByName(udpAdvertiseHost), boundAddr.getPort())
+                : boundAddr;
+            byte[] response = Socks5.buildResponse(advertiseAddr);
+            writer.write(client, response, ()->onUdpAssociate.accept(udpChannel), closeExHandler);
+        }catch(Exception e){
+            exHandler.accept(e);
+        }
     }
     private void socks5_server_target_connect(SocketChannel client, InetAddress host, int port,
             IOExceptionConsumer<SocketChannel> onConnect, Consumer<Exception> exHandler) {

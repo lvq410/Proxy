@@ -20,6 +20,7 @@ import com.google.common.net.HostAndPort;
 
 import lombok.Data;
 import lombok.Getter;
+import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 /**
@@ -42,8 +43,8 @@ public class Config {
     
     @Getter
     private List<TcpConfig> tcp = emptyList();
-    @Getter@Setter
-    private List<Integer> socks5 = emptyList();
+    @Getter
+    private List<Socks5Config> socks5 = emptyList();
     @Getter@Setter
     private List<Integer> http = emptyList();
     @Getter
@@ -51,6 +52,18 @@ public class Config {
     @Getter@Setter
     private List<Integer> pws = emptyList();
     
+    public void setSocks5(List<Socks5Config> socks5) {
+        for(Socks5Config c : socks5){
+            Validate.notNull(c.port, "socks5代理，port配置不能为空");
+            if(c.udpPortMin!=null || c.udpPortMax!=null){
+                Validate.notNull(c.udpPortMin, "socks5代理，udpPortMin/udpPortMax必须同时配置");
+                Validate.notNull(c.udpPortMax, "socks5代理，udpPortMin/udpPortMax必须同时配置");
+                Validate.isTrue(c.udpPortMin<=c.udpPortMax, "socks5代理，udpPortMin必须<=udpPortMax");
+            }
+        }
+        this.socks5 = socks5;
+    }
+
     public void setTcp(List<TcpConfig> tcp) {
         for(TcpConfig c : tcp){
             Validate.notNull(c.target, "tcp反向代理，target配置不能为空");
@@ -190,5 +203,23 @@ public class Config {
             ;
         }
     }
-    
+
+    /**
+     * socks5代理配置
+     */
+    @Data @NoArgsConstructor
+    public static class Socks5Config {
+        /** 监听端口 */
+        public Integer port;
+        /** UDP中继对外通告地址，为空时取TCP连接的本地地址 */
+        public String udpAdvertiseHost;
+        /** UDP中继端口范围下限（含），为空时由系统分配 */
+        public Integer udpPortMin;
+        /** UDP中继端口范围上限（含），为空时由系统分配 */
+        public Integer udpPortMax;
+
+        /** 兼容纯数字配置格式，如 {@code socks5: [1080]} */
+        public Socks5Config(Integer port) { this.port = port; }
+    }
+
 }
