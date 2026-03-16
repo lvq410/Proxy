@@ -42,6 +42,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.net.HostAndPort;
 import com.google.common.primitives.Ints;
 import com.lvt4j.socketproxy.Config.IntranetConfig;
+import com.lvt4j.socketproxy.ProxyApp.IOExceptionRunnable;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -252,9 +253,9 @@ public class IntranetService implements InfoContributor {
         private void relayerCheck() throws IOException {
             if(relayer==null) throw new IOException("转发服务未连接");
         }
-        private synchronized void relayWriteTransmit(byte[] body) throws IOException {
+        private synchronized void relayWriteTransmit(byte[] body, IOExceptionRunnable onWrite) throws IOException {
             relayerCheck();
-            writer.write(relayer, body, this::relayException);
+            writer.write(relayer, body, onWrite, this::relayException);
         }
         private synchronized void relayWriteConnectClose(byte[] body) {
             if(relayer==null) return;
@@ -343,10 +344,10 @@ public class IntranetService implements InfoContributor {
                 onTrans();
             }
             private void dataFromClientToRelay(ByteBuffer data) throws IOException {
-                EntryServer.this.relayWriteTransmit(MsgType.Transmit.packet(idBs, data));
+                EntryServer.this.relayWriteTransmit(MsgType.Transmit.packet(idBs, data), ()->{
+                    reader.readAny(client, data, this::dataFromClientToRelay, this::onException);
+                });
                 onTrans();
-                
-                reader.readAny(client, data, this::dataFromClientToRelay, this::onException);
             }
             
             private void onTrans() {
@@ -497,9 +498,9 @@ public class IntranetService implements InfoContributor {
             entry = null;
             entryConnectBegin();
         }
-        private synchronized void entryWriteTransmit(byte[] body) throws IOException {
+        private synchronized void entryWriteTransmit(byte[] body, IOExceptionRunnable onWrite) throws IOException {
             entryCheck();
-            writer.write(entry, body, this::entryOnException);
+            writer.write(entry, body, onWrite, this::entryOnException);
         }
         private synchronized void entryWriteConnectClose(byte[] packet) {
             if(entry==null) return;
@@ -585,7 +586,6 @@ public class IntranetService implements InfoContributor {
                 if(buf==null) buf = ByteBuffer.allocate(1024);
                 reader.readAny(target, buf, data->{
                     dataFromTargetToEntry(data);
-                    targetRead(data);
                 }, this::onException);
             }
             private void dataFromEntryToTarget(byte[] data) {
@@ -594,8 +594,9 @@ public class IntranetService implements InfoContributor {
                 onTrans();
             }
             private void dataFromTargetToEntry(ByteBuffer data) throws IOException {
-                RelayServer.this.entryWriteTransmit(MsgType.Transmit.packet(idBs, data));
-                
+                RelayServer.this.entryWriteTransmit(MsgType.Transmit.packet(idBs, data), ()->{
+                    targetRead(data);
+                });
                 onTrans();
             }
             
@@ -613,8 +614,8 @@ public class IntranetService implements InfoContributor {
             private synchronized void destory(boolean sendCloseMsgToEntry) {
                 ProxyApp.close(target);
                 connections.remove(id);
-                entryWriteConnectClose(MsgType.ConnectClose.packet(idBs));
-                
+                if(sendCloseMsgToEntry) entryWriteConnectClose(MsgType.ConnectClose.packet(idBs));
+
                 log.info("{} disconnected {}", targetConfig, direction);
             }
         }
