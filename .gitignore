@@ -24,3 +24,5 @@ pid
 /test/
 /logs/
 *.log
+
+/.claude/
