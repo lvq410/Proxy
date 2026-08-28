@@ -62,3 +62,19 @@ intranet:
 
 pws:
 #- 80
+#  或
+#- port: 80
+#  # 连接认证，不配或enabled=false时不做认证(默认)
+#  # 客户端通过 pws://user:pass@host:port 携带凭据，无需额外配置
+#  # 注意：basic认证的凭据仅base64编码而非加密，开启认证时应确保处于TLS之后
+#  #      (客户端用pwss://，或由反向代理终结TLS)，否则密码在链路上是明文的
+#  auth:
+#    enabled: true
+#    url: ldap://ldap.example.com:389
+#    baseDn: ou=people,dc=example,dc=com
+#    bindDn: cn=readonly,dc=example,dc=com
+#    bindPassword: readonly-password
+#    # 搜索用户的过滤器，{0}会被替换为待认证的用户名，默认 (uid={0})
+#    userFilter: (uid={0})
+#    # 认证通过结果的缓存时长(毫秒)，默认5分钟，配0则不缓存
+#    cacheMillis: 300000

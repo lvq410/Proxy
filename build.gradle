@@ -82,6 +82,8 @@ dependencies {
     testAnnotationProcessor 'org.projectlombok:lombok:1.18.6'
     testCompileOnly 'org.projectlombok:lombok:1.18.6'
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    // 内存LDAP服务，用于pws认证的集成测试，不进入发布产物
+    testImplementation 'com.unboundid:unboundid-ldapsdk:6.0.11'
         
     annotationProcessor 'org.projectlombok:lombok:1.18.6'
     compileOnly 'org.projectlombok:lombok:1.18.6'

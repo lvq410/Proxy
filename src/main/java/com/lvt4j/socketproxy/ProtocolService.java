@@ -64,17 +64,27 @@ public class ProtocolService {
         public static final byte[] EstablishedHeaders = "HTTP/1.0 200 Connection established\r\nProxy-Agent: lvt4j-SocketProxy/1.0\r\n\r\n".getBytes();
     }
     public static class Pws {
-        
+
         /**
          * 请求头中携带目标服务地址
          */
         public static final String Header_Target = "Pws-Target";
-        
+
+        /**
+         * 请求头中携带认证凭据，格式为{@code Basic base64(user:pass)}
+         */
+        public static final String Header_Authorization = "Authorization";
+
+        /**
+         * {@link #Header_Authorization}中basic认证的前缀
+         */
+        public static final String Basic_Prefix = "Basic ";
+
         /**
          * String格式传递命令：连接关闭
          */
         public static final String Command_Close = "Close";
-        
+
     }
     
     @Autowired

@@ -1,11 +1,14 @@
 package com.lvt4j.socketproxy;
 
+import static com.lvt4j.socketproxy.ProtocolService.Pws.Basic_Prefix;
 import static com.lvt4j.socketproxy.ProtocolService.Pws.Command_Close;
+import static com.lvt4j.socketproxy.ProtocolService.Pws.Header_Authorization;
 import static com.lvt4j.socketproxy.ProtocolService.Pws.Header_Target;
 import static com.lvt4j.socketproxy.ProxyApp.format;
 import static com.lvt4j.socketproxy.ProxyApp.isCloseException;
 import static com.lvt4j.socketproxy.ProxyApp.port;
 import static java.lang.String.format;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.stream.Collectors.groupingBy;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.mapping;
@@ -15,9 +18,11 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -31,6 +36,7 @@ import javax.annotation.PreDestroy;
 
 import org.apache.commons.lang3.StringUtils;
 import org.java_websocket.WebSocket;
+import org.java_websocket.framing.CloseFrame;
 import org.java_websocket.handshake.ClientHandshake;
 import org.java_websocket.server.WebSocketServer;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -41,6 +47,7 @@ import org.springframework.stereotype.Service;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.common.net.HostAndPort;
+import com.lvt4j.socketproxy.Config.PwsConfig;
 
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
@@ -72,16 +79,25 @@ public class PwsService implements InfoContributor {
         reloadConfig();
     }
     private synchronized void reloadConfig() {
-        List<Integer> pws = config.getPws();
-        ImmutableSet.copyOf(servers.keySet()).stream().filter(p->!pws.contains(p)).forEach(removed->{
+        List<PwsConfig> pws = config.getPws();
+        Map<Integer, PwsConfig> pwsByPort = new LinkedHashMap<>();
+        for(PwsConfig c : pws) pwsByPort.put(c.getPort(), c);
+
+        ImmutableSet.copyOf(servers.keySet()).stream().filter(p->!pwsByPort.containsKey(p)).forEach(removed->{
             ServerMeta s = servers.remove(removed);
             if(s!=null) s.destory();
         });
-        for(int port : pws){
-            if(servers.containsKey(port)) continue;
+        for(PwsConfig c : pws){
+            int port = c.getPort();
+            ServerMeta exist = servers.get(port);
+            if(exist!=null){
+                // 端口未变但认证配置可能变了，配置一致则复用，否则重建
+                if(Objects.equals(exist.pwsConfig.getAuth(), c.getAuth())) continue;
+                exist.destory();
+            }
             try{
-                servers.put(port, new ServerMeta(port));
-                log.info("{} pws代理启动", port);
+                servers.put(port, new ServerMeta(c));
+                log.info("{} pws代理启动{}", port, c.authEnabled()?"(已开启认证)":"");
             }catch(Exception e){
                 log.error("{} pws代理启动失败", port, e);
             }
@@ -101,27 +117,60 @@ public class PwsService implements InfoContributor {
     @Override
     public void contribute(Builder builder) {
         if(servers.isEmpty()) return;
-        builder.withDetail("pws", config.getPws().stream().map(servers::get).filter(Objects::nonNull)
+        builder.withDetail("pws", config.getPws().stream().map(PwsConfig::getPort).map(servers::get).filter(Objects::nonNull)
             .map(ServerMeta::info).collect(joining("\n")));
     }
-    
+
     private class ServerMeta extends WebSocketServer {
-        
+
         private final int port;
-        
+        private final PwsConfig pwsConfig;
+        /** 连接认证器，未开启认证时为null */
+        private final PwsAuthenticator authenticator;
+
         private List<ConnectMeta> connections = Collections.synchronizedList(new LinkedList<>());
-        
-        public ServerMeta(int port) {
-            super(new InetSocketAddress(port));
-            this.port = port;
+
+        public ServerMeta(PwsConfig config) {
+            super(new InetSocketAddress(config.getPort()));
+            this.port = config.getPort();
+            this.pwsConfig = config;
+            this.authenticator = config.authEnabled()? new LdapPwsAuthenticator(config.getAuth()): null;
             start();
         }
-        
+
         @Override public void onStart() {}
         @Override @SneakyThrows
         public void onOpen(WebSocket client, ClientHandshake handshake) {
+            if(!authenticate(handshake)){
+                // 认证失败时不建立ConnectMeta，直接关闭连接
+                log.warn("{} 认证失败，拒绝连接 {}", port, format(client.getRemoteSocketAddress()));
+                client.close(CloseFrame.POLICY_VALIDATION, "Unauthorized");
+                return;
+            }
             connections.add(new ConnectMeta(client, handshake));
         }
+
+        /**
+         * 校验握手请求中的{@code Authorization: Basic}凭据
+         * @return 未开启认证时恒为true
+         */
+        private boolean authenticate(ClientHandshake handshake) {
+            if(authenticator==null) return true;
+            String authorization = handshake.getFieldValue(Header_Authorization);
+            if(StringUtils.isBlank(authorization)) return false;
+            if(!StringUtils.startsWithIgnoreCase(authorization, Basic_Prefix)) return false;
+            String userPass;
+            try{
+                userPass = new String(Base64.getDecoder().decode(authorization.substring(Basic_Prefix.length()).trim()), UTF_8);
+            }catch(Exception e){
+                return false;
+            }
+            // 密码中可能含有冒号，只按第一个冒号切分
+            int idx = userPass.indexOf(':');
+            if(idx<0) return false;
+            return authenticator.authenticate(userPass.substring(0, idx), userPass.substring(idx+1));
+        }
+
         @Override
         public void onClose(WebSocket client, int code, String reason, boolean remote) {
             ConnectMeta cnn = client.getAttachment();
@@ -158,7 +207,9 @@ public class PwsService implements InfoContributor {
             try{
                 stop();
             }catch(Exception ig){}
-            servers.remove(port);
+            // 认证配置变更时会先destory旧实例再put新实例，
+            // 这里只在map中仍是自己时才移除，避免误删刚建好的新实例
+            servers.remove(port, this);
             log.info("{} pws代理停止", port);
         }
         
