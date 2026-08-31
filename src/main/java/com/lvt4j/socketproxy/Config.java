@@ -5,7 +5,12 @@ import static java.util.Collections.emptyList;
 
 import java.net.InetAddress;
 import java.net.URI;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import javax.annotation.PreDestroy;
@@ -20,6 +25,7 @@ import org.springframework.core.convert.converter.Converter;
 import org.springframework.stereotype.Component;
 
 import com.google.common.net.HostAndPort;
+import com.lvt4j.socketproxy.auth.AuthorType;
 
 import lombok.Data;
 import lombok.Getter;
@@ -40,10 +46,11 @@ public class Config {
     public static Runnable changeCallback_http;
     public static Runnable changeCallback_intranet;
     public static Runnable changeCallback_pws;
-    
+    public static Runnable changeCallback_auth;
+
     @Setter@Getter
     private long maxIdleTime;
-    
+
     @Getter
     private List<TcpConfig> tcp = emptyList();
     @Getter
@@ -54,7 +61,21 @@ public class Config {
     private List<IntranetConfig> intranet = emptyList();
     @Getter
     private List<PwsConfig> pws = emptyList();
-    
+    @Getter
+    private AuthConfig auth = new AuthConfig();
+
+    public void setAuth(AuthConfig auth) {
+        if(auth==null) auth = new AuthConfig();
+        Set<String> ids = new HashSet<>();
+        for(AuthorConfig c : auth.getAuthors()){
+            Validate.notBlank(c.id, "认证器，id不能为空");
+            Validate.notNull(c.type, "认证器[%s]，type不能为空且必须为支持的类型:%s",
+                c.id, Arrays.toString(AuthorType.values()));
+            Validate.isTrue(ids.add(c.id), "认证器id重复:%s", c.id);
+        }
+        this.auth = auth;
+    }
+
     public void setSocks5(List<Socks5Config> socks5) {
         for(Socks5Config c : socks5){
             Validate.notNull(c.port, "socks5代理，port配置不能为空");
@@ -96,7 +117,6 @@ public class Config {
         for(PwsConfig c : pws){
             Validate.notNull(c.port, "pws代理，port配置不能为空");
             Validate.isTrue(0<c.port && c.port<65535, "pws代理，port配置必须在(0~65535]内");
-            if(c.auth!=null && c.auth.enabled) c.auth.validate();
         }
         this.pws = pws;
     }
@@ -112,9 +132,10 @@ public class Config {
             if(changeCallback_http!=null) changeCallback_http.run();
             if(changeCallback_intranet!=null) changeCallback_intranet.run();
             if(changeCallback_pws!=null) changeCallback_pws.run();
+            if(changeCallback_auth!=null) changeCallback_auth.run();
         }).start();
     }
-    
+
     /**
      * tcp反向代理配置
      * @author LV on 2022年4月7日
@@ -242,54 +263,68 @@ public class Config {
     public static class PwsConfig {
         /** 监听端口 */
         public Integer port;
-        /** 连接认证配置，为空或未开启时不做认证 */
-        public LdapAuthConfig auth;
+        /** 连接认证配置，为空时不做认证 */
+        public PwsAuthConfig auth;
 
         /** 兼容纯数字配置格式，如 {@code pws: [80]} */
         public PwsConfig(Integer port) { this.port = port; }
 
-        /** 是否已开启认证 */
-        public boolean authEnabled() { return auth!=null && auth.enabled; }
+        /** 引用的认证器id，为空表示不认证 */
+        public String authorId() { return auth==null? null: auth.authorId; }
     }
 
     /**
-     * pws代理的LDAP认证配置<br>
-     * 客户端通过{@code Authorization: Basic}头携带凭据，服务端向LDAP校验。
+     * pws代理的连接认证配置<br>
+     * 客户端通过{@code Authorization: Basic}头携带凭据，服务端交由所引用的认证器校验。
      * <p>
      * 注意：basic认证中凭据仅做base64编码而非加密，
      * 开启认证时应确保pws服务处于TLS之后(即客户端用{@code pwss://}或由反向代理终结TLS)，
-     * 否则用户密码在链路上是明文的。
+     * 否则凭据在链路上是明文的。
      *
-     * @author LV on 2026年8月28日
+     * @author LV on 2026年8月31日
      */
     @Data
-    public static class LdapAuthConfig {
-        /** 是否开启认证，默认不开启，保持与旧版本一致的无认证行为 */
-        public boolean enabled;
-        /** ldap服务地址，如 {@code ldap://ldap.example.com:389} */
-        public String url;
-        /** 搜索用户的起始节点，如 {@code ou=people,dc=example,dc=com} */
-        public String baseDn;
-        /** 用于搜索用户的只读账号DN */
-        public String bindDn;
-        /** 只读账号密码 */
-        public String bindPassword;
-        /** 搜索用户的过滤器，{@code {0}}会被替换为待认证的用户名 */
-        public String userFilter = "(uid={0})";
-        /** 认证通过结果的缓存时长(毫秒)，避免每次连接都请求ldap；配置为0则不缓存 */
-        public long cacheMillis = TimeUnit.MINUTES.toMillis(5);
-        /** ldap连接超时(毫秒) */
-        public int connectTimeout = 5000;
-        /** ldap读取超时(毫秒) */
-        public int readTimeout = 5000;
+    public static class PwsAuthConfig {
+        /**
+         * 引用{@code auth.authors}中声明的认证器id。<br>
+         * 不配置则该端口不做认证。
+         */
+        public String authorId;
+    }
 
-        /** 开启认证时校验必填项，缺失则启动即失败，避免误以为已受保护实则形同虚设 */
-        public void validate() {
-            Validate.notBlank(url, "pws代理开启认证时，auth.url不能为空");
-            Validate.notBlank(baseDn, "pws代理开启认证时，auth.baseDn不能为空");
-            Validate.notBlank(bindDn, "pws代理开启认证时，auth.bindDn不能为空");
-            Validate.notBlank(bindPassword, "pws代理开启认证时，auth.bindPassword不能为空");
-            Validate.notBlank(userFilter, "pws代理开启认证时，auth.userFilter不能为空");
+    /**
+     * 认证相关配置
+     * @author LV on 2026年8月31日
+     */
+    @Data
+    public static class AuthConfig {
+        /** 各认证器配置 */
+        public List<AuthorConfig> authors = emptyList();
+
+        public void setAuthors(List<AuthorConfig> authors) {
+            this.authors = authors==null? emptyList(): authors;
+        }
+    }
+
+    /**
+     * 单个认证器配置
+     * @author LV on 2026年8月31日
+     */
+    @Data
+    public static class AuthorConfig {
+        /** 认证器id，各认证器的id不能重复，供使用方引用 */
+        public String id;
+        /** 认证方式 */
+        public AuthorType type;
+        /** 不同认证方式所需的配置不同 */
+        public Map<String, String> args = new LinkedHashMap<>();
+
+        public void setType(String type) {
+            this.type = AuthorType.parse(type);
+        }
+
+        public void setArgs(Map<String, String> args) {
+            this.args = args==null? new LinkedHashMap<>(): args;
         }
     }
 

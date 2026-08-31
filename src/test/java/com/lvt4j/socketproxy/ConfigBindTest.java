@@ -1,7 +1,7 @@
 package com.lvt4j.socketproxy;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 
 import java.util.Collections;
 
@@ -11,7 +11,9 @@ import org.springframework.boot.context.properties.source.ConfigurationPropertyS
 import org.springframework.boot.context.properties.source.MapConfigurationPropertySource;
 import org.springframework.core.convert.support.DefaultConversionService;
 
+import com.lvt4j.socketproxy.Config.AuthorConfig;
 import com.lvt4j.socketproxy.Config.PwsConfig;
+import com.lvt4j.socketproxy.auth.AuthorType;
 
 /**
  * 配置绑定测试。
@@ -30,7 +32,7 @@ public class ConfigBindTest {
         assertEquals(1, config.getPws().size());
         PwsConfig c = config.getPws().get(0);
         assertEquals(90, c.getPort().intValue());
-        assertFalse("未配置auth时不应开启认证", c.authEnabled());
+        assertNull("未配置auth时不应引用认证器", c.authorId());
     }
 
     /** pws数组写法，如 {@code pws: [80]} */
@@ -41,23 +43,57 @@ public class ConfigBindTest {
         assertEquals(80, config.getPws().get(0).getPort().intValue());
     }
 
-    /** pws对象写法，带认证配置 */
+    /** pws对象写法，通过authorId引用认证器 */
     @Test
-    public void pws_object_with_auth() {
+    public void pws_object_with_authorId() {
         MapConfigurationPropertySource source = new MapConfigurationPropertySource();
         source.put("pws[0].port", "90");
-        source.put("pws[0].auth.enabled", "true");
-        source.put("pws[0].auth.url", "ldap://127.0.0.1:389");
-        source.put("pws[0].auth.baseDn", "ou=people,dc=example,dc=com");
-        source.put("pws[0].auth.bindDn", "cn=readonly,dc=example,dc=com");
-        source.put("pws[0].auth.bindPassword", "pass");
+        source.put("pws[0].auth.authorId", "local-token");
+        source.put("auth.authors[0].id", "local-token");
+        source.put("auth.authors[0].type", "LocalToken");
+        source.put("auth.authors[0].args.userStore", "data/users.json");
         Config config = bind(source);
 
         PwsConfig c = config.getPws().get(0);
         assertEquals(90, c.getPort().intValue());
-        assertEquals(true, c.authEnabled());
-        assertEquals("ldap://127.0.0.1:389", c.getAuth().getUrl());
-        assertEquals("默认的userFilter应生效", "(uid={0})", c.getAuth().getUserFilter());
+        assertEquals("local-token", c.authorId());
+
+        AuthorConfig a = config.getAuth().getAuthors().get(0);
+        assertEquals("local-token", a.getId());
+        assertEquals(AuthorType.LocalToken, a.getType());
+        assertEquals("data/users.json", a.getArgs().get("userStore"));
+    }
+
+    /** 认证器type大小写不敏感 */
+    @Test
+    public void author_type_case_insensitive() {
+        MapConfigurationPropertySource source = new MapConfigurationPropertySource();
+        source.put("auth.authors[0].id", "x");
+        source.put("auth.authors[0].type", "localtoken");
+        source.put("auth.authors[0].args.userStore", "u.json");
+        assertEquals(AuthorType.LocalToken, bind(source).getAuth().getAuthors().get(0).getType());
+    }
+
+    /** 认证器id重复应报错 */
+    @Test(expected=Exception.class)
+    public void author_duplicate_id() {
+        MapConfigurationPropertySource source = new MapConfigurationPropertySource();
+        source.put("auth.authors[0].id", "same");
+        source.put("auth.authors[0].type", "LocalToken");
+        source.put("auth.authors[0].args.userStore", "a.json");
+        source.put("auth.authors[1].id", "same");
+        source.put("auth.authors[1].type", "LocalToken");
+        source.put("auth.authors[1].args.userStore", "b.json");
+        bind(source);
+    }
+
+    /** 认证器type不支持时应报错，而非静默忽略 */
+    @Test(expected=Exception.class)
+    public void author_unknown_type() {
+        MapConfigurationPropertySource source = new MapConfigurationPropertySource();
+        source.put("auth.authors[0].id", "x");
+        source.put("auth.authors[0].type", "NoSuchType");
+        bind(source);
     }
 
     /** socks5单端口标量写法，如 {@code socks5: 1080}，线上历史配置即为此写法 */

@@ -1,4 +1,4 @@
-package com.lvt4j.socketproxy;
+package com.lvt4j.socketproxy.auth;
 
 import com.unboundid.ldap.listener.InMemoryDirectoryServer;
 import com.unboundid.ldap.listener.InMemoryDirectoryServerConfig;
@@ -8,7 +8,7 @@ import com.unboundid.ldap.sdk.Entry;
 import lombok.SneakyThrows;
 
 /**
- * 测试用的内存LDAP服务，供{@link LdapPwsAuthenticator}的测试使用，
+ * 测试用的内存LDAP服务，供{@link LdapAuthor}的测试使用，
  * 目录结构与常见的企业LDAP保持一致：用户位于{@link #BaseDn}下，以uid标识。
  *
  * @author LV on 2026年8月28日

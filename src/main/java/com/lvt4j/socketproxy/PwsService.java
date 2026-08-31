@@ -48,6 +48,8 @@ import org.springframework.stereotype.Service;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.net.HostAndPort;
 import com.lvt4j.socketproxy.Config.PwsConfig;
+import com.lvt4j.socketproxy.auth.Author;
+import com.lvt4j.socketproxy.auth.AuthorRegistry;
 
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
@@ -64,6 +66,9 @@ public class PwsService implements InfoContributor {
     @Autowired
     private Config config;
     
+    @Autowired
+    private AuthorRegistry authorRegistry;
+
     @Autowired
     private ChannelConnector connector;
     @Autowired
@@ -97,7 +102,7 @@ public class PwsService implements InfoContributor {
             }
             try{
                 servers.put(port, new ServerMeta(c));
-                log.info("{} pws代理启动{}", port, c.authEnabled()?"(已开启认证)":"");
+                log.info("{} pws代理启动{}", port, c.authorId()==null?"":"(认证器:"+c.authorId()+")");
             }catch(Exception e){
                 log.error("{} pws代理启动失败", port, e);
             }
@@ -125,8 +130,8 @@ public class PwsService implements InfoContributor {
 
         private final int port;
         private final PwsConfig pwsConfig;
-        /** 连接认证器，未开启认证时为null */
-        private final PwsAuthenticator authenticator;
+        /** 引用的认证器，不认证时为null */
+        private final Author author;
 
         private List<ConnectMeta> connections = Collections.synchronizedList(new LinkedList<>());
 
@@ -134,7 +139,8 @@ public class PwsService implements InfoContributor {
             super(new InetSocketAddress(config.getPort()));
             this.port = config.getPort();
             this.pwsConfig = config;
-            this.authenticator = config.authEnabled()? new LdapPwsAuthenticator(config.getAuth()): null;
+            // 认证器id写错时启动失败，而非静默地变成不认证
+            this.author = config.authorId()==null? null: authorRegistry.require(config.authorId());
             start();
         }
 
@@ -152,10 +158,10 @@ public class PwsService implements InfoContributor {
 
         /**
          * 校验握手请求中的{@code Authorization: Basic}凭据
-         * @return 未开启认证时恒为true
+         * @return 未引用认证器时恒为true
          */
         private boolean authenticate(ClientHandshake handshake) {
-            if(authenticator==null) return true;
+            if(author==null) return true;
             String authorization = handshake.getFieldValue(Header_Authorization);
             if(StringUtils.isBlank(authorization)) return false;
             if(!StringUtils.startsWithIgnoreCase(authorization, Basic_Prefix)) return false;
@@ -165,10 +171,10 @@ public class PwsService implements InfoContributor {
             }catch(Exception e){
                 return false;
             }
-            // 密码中可能含有冒号，只按第一个冒号切分
+            // 凭据中可能含有冒号，只按第一个冒号切分
             int idx = userPass.indexOf(':');
             if(idx<0) return false;
-            return authenticator.authenticate(userPass.substring(0, idx), userPass.substring(idx+1));
+            return author.authenticate(userPass.substring(0, idx), userPass.substring(idx+1));
         }
 
         @Override

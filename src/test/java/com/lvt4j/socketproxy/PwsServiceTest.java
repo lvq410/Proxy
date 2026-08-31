@@ -1,15 +1,19 @@
 package com.lvt4j.socketproxy;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.URLEncoder;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -17,25 +21,33 @@ import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.reflect.FieldUtils;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
-import com.lvt4j.socketproxy.Config.LdapAuthConfig;
+import com.lvt4j.socketproxy.Config.AuthConfig;
+import com.lvt4j.socketproxy.Config.AuthorConfig;
+import com.lvt4j.socketproxy.Config.PwsAuthConfig;
 import com.lvt4j.socketproxy.Config.PwsConfig;
+import com.lvt4j.socketproxy.auth.AuthorRegistry;
+import com.lvt4j.socketproxy.auth.EmbeddedLdap;
+import com.lvt4j.socketproxy.auth.LocalTokenAuthor;
 
 /**
- * pws代理测试，覆盖开启/未开启LDAP认证两种情形。
+ * pws代理测试，覆盖不认证/本地token认证/ldap认证三种情形。
  * <p>
- * 借助{@link EmbeddedLdap}在本地起一个内存LDAP服务，
- * 使{@link LdapPwsAuthenticator}的“只读账号搜索用户DN + 用户DN二次bind”流程
- * 能在测试中被真实地走一遍，而非用假认证器绕过。
+ * ldap场景借助{@link EmbeddedLdap}在本地起一个内存ldap服务，
+ * 使认证器的“只读账号搜索用户DN + 用户DN二次bind”流程能被真实地走一遍。
  *
- * @author LV on 2026年8月28日
+ * @author LV on 2026年8月31日
  */
 public class PwsServiceTest extends BaseTest {
 
-    /** 内存ldap中预置的用户及其密码 */
-    private static final String User = "zhangsan";
-    private static final String Password = "pass:word-with-colon";
+    private static final String LdapUser = "zhangsan";
+    private static final String LdapPassword = "pass:word-with-colon";
+
+    @Rule
+    public TemporaryFolder tmp = new TemporaryFolder();
 
     private EmbeddedLdap ldap;
 
@@ -43,6 +55,7 @@ public class PwsServiceTest extends BaseTest {
 
     private PwsService service;
     private TcpService tcpService;
+    private AuthorRegistry registry;
 
     private Config config;
     private ChannelReader reader;
@@ -51,8 +64,6 @@ public class PwsServiceTest extends BaseTest {
     private ChannelConnector connector;
     private ProtocolService protocolService;
 
-    /** pws客户端本地入口，由TcpService提供 */
-    private int tcpPort;
     private Socket socket;
     private InputStream in;
     private OutputStream out;
@@ -64,9 +75,6 @@ public class PwsServiceTest extends BaseTest {
 
     @Before
     public void before() throws Exception {
-        ldap = new EmbeddedLdap(availablePort());
-        ldap.addUser(User, Password);
-
         port = availablePort();
         targetPort = availablePort();
         target = new ServerSocket(targetPort);
@@ -83,8 +91,12 @@ public class PwsServiceTest extends BaseTest {
         FieldUtils.writeField(protocolService, "writer", writer, true);
         FieldUtils.writeField(protocolService, "connector", connector, true);
 
+        registry = new AuthorRegistry();
+        FieldUtils.writeField(registry, "config", config, true);
+
         service = new PwsService();
         FieldUtils.writeField(service, "config", config, true);
+        FieldUtils.writeField(service, "authorRegistry", registry, true);
         FieldUtils.writeField(service, "connector", connector, true);
         FieldUtils.writeField(service, "reader", reader, true);
         FieldUtils.writeField(service, "writer", writer, true);
@@ -98,6 +110,7 @@ public class PwsServiceTest extends BaseTest {
 
         if(tcpService!=null) invoke(tcpService, "destory");
         if(service!=null) invoke(service, "destory");
+        if(registry!=null) invoke(registry, "destory");
         if(reader!=null) invoke(reader, "destory");
         if(writer!=null) invoke(writer, "destory");
         if(acceptor!=null) invoke(acceptor, "destory");
@@ -107,103 +120,69 @@ public class PwsServiceTest extends BaseTest {
     }
 
     // ------------------------------------------------------------------
-    // 认证器本身
+    // 端到端
     // ------------------------------------------------------------------
 
-    /** 正确凭据应认证通过 */
-    @Test(timeout=60000)
-    public void auth_ok() {
-        assertTrue(authenticator().authenticate(User, Password));
-    }
-    /** 密码错误应被拒 */
-    @Test(timeout=60000)
-    public void auth_wrong_password() {
-        assertFalse(authenticator().authenticate(User, "wrong-password"));
-    }
-    /** 用户不存在应被拒 */
-    @Test(timeout=60000)
-    public void auth_unknown_user() {
-        assertFalse(authenticator().authenticate("nobody", Password));
-    }
-    /**
-     * 空密码应被拒。<br>
-     * ldap协议中空密码的simple bind会被当作匿名bind从而“成功”，
-     * 必须由认证器提前拦下，否则等同于无认证。
-     */
-    @Test(timeout=60000)
-    public void auth_empty_password() {
-        assertFalse(authenticator().authenticate(User, ""));
-    }
-    /** ldap不可达时应认证失败，而非放行 */
-    @Test(timeout=60000)
-    public void auth_ldap_unreachable() throws Exception {
-        LdapAuthConfig cfg = ldapConfig();
-        cfg.setUrl("ldap://127.0.0.1:"+availablePort()); // 无人监听
-        cfg.setConnectTimeout(1000);
-        cfg.setReadTimeout(1000);
-        assertFalse(new LdapPwsAuthenticator(cfg).authenticate(User, Password));
-    }
-    /** 认证通过的结果应被缓存：关掉ldap后仍能通过 */
-    @Test(timeout=60000)
-    public void auth_cache() throws Exception {
-        PwsAuthenticator authenticator = authenticator();
-        assertTrue(authenticator.authenticate(User, Password));
-
-        ldap.shutdown(); ldap = null;
-
-        assertTrue("认证通过的结果应命中缓存", authenticator.authenticate(User, Password));
-    }
-    /** 关闭缓存后，ldap不可用则不再放行 */
-    @Test(timeout=60000)
-    public void auth_cache_disabled() throws Exception {
-        LdapAuthConfig cfg = ldapConfig();
-        cfg.setCacheMillis(0);
-        cfg.setConnectTimeout(1000);
-        cfg.setReadTimeout(1000);
-        PwsAuthenticator authenticator = new LdapPwsAuthenticator(cfg);
-        assertTrue(authenticator.authenticate(User, Password));
-
-        ldap.shutdown(); ldap = null;
-
-        assertFalse("未开缓存时不应放行", authenticator.authenticate(User, Password));
-    }
-
-    // ------------------------------------------------------------------
-    // pws服务端 + 客户端 端到端
-    // ------------------------------------------------------------------
-
-    /** 未开启认证时，不带凭据也应能正常代理，保证向后兼容 */
+    /** 未引用认证器时，不带凭据也应能正常代理，保证向后兼容 */
     @Test(timeout=60000)
     public void noAuth_trans() throws Exception {
-        startPws(false);
+        startPws(null);
         startTcpClient(null, null);
 
         assertTrans();
     }
 
-    /** 开启认证且凭据正确时，应能正常代理 */
+    /** 本地token认证：凭据正确时应能正常代理 */
     @Test(timeout=60000)
-    public void auth_trans() throws Exception {
-        startPws(true);
-        startTcpClient(User, Password);
+    public void localToken_trans() throws Exception {
+        String token = startPwsWithLocalToken();
+        startTcpClient("zhangsan", token);
 
         assertTrans();
     }
 
-    /** 开启认证但凭据错误时，连接应被拒绝 */
+    /** 本地token认证：凭据错误时应拒绝 */
     @Test(timeout=60000)
-    public void auth_reject_wrong_password() throws Exception {
-        startPws(true);
-        startTcpClient(User, "wrong-password");
+    public void localToken_reject_wrong() throws Exception {
+        startPwsWithLocalToken();
+        startTcpClient("zhangsan", "wrong-token");
 
         assertNoConnection();
     }
 
-    /** 开启认证但完全不带凭据时，连接应被拒绝 */
+    /** 本地token认证：不带凭据时应拒绝 */
     @Test(timeout=60000)
-    public void auth_reject_no_credential() throws Exception {
-        startPws(true);
+    public void localToken_reject_none() throws Exception {
+        startPwsWithLocalToken();
         startTcpClient(null, null);
+
+        assertNoConnection();
+    }
+
+    /** 本地token认证：用户被停用后应拒绝 */
+    @Test(timeout=60000)
+    public void localToken_reject_disabled() throws Exception {
+        String token = startPwsWithLocalToken();
+        registry.get("local", LocalTokenAuthor.class).store().setEnabled("zhangsan", false);
+        startTcpClient("zhangsan", token);
+
+        assertNoConnection();
+    }
+
+    /** ldap认证：凭据正确时应能正常代理 */
+    @Test(timeout=60000)
+    public void ldap_trans() throws Exception {
+        startPwsWithLdap();
+        startTcpClient(LdapUser, LdapPassword);
+
+        assertTrans();
+    }
+
+    /** ldap认证：凭据错误时应拒绝 */
+    @Test(timeout=60000)
+    public void ldap_reject_wrong() throws Exception {
+        startPwsWithLdap();
+        startTcpClient(LdapUser, "wrong-password");
 
         assertNoConnection();
     }
@@ -212,19 +191,33 @@ public class PwsServiceTest extends BaseTest {
     // 配置装载
     // ------------------------------------------------------------------
 
-    /** pws配置应兼容纯数字写法，且认证默认不开启 */
+    /** pws配置应兼容纯数字写法，且默认不认证 */
     @Test(timeout=60000)
     public void config_compatible_plain_port() {
         config.setPws(Arrays.asList(new PwsConfig(port)));
         PwsConfig c = config.getPws().get(0);
         assertEquals(port, c.getPort().intValue());
-        assertFalse("未配置auth时不应开启认证", c.authEnabled());
+        assertNull("未配置auth时不应引用认证器", c.authorId());
+    }
+
+    /** 引用不存在的认证器id时应启动失败，而非静默地不认证 */
+    @Test(timeout=60000)
+    public void unknown_authorId() throws Exception {
+        invoke(registry, "init");
+        config.setPws(Arrays.asList(pwsConfig("no-such-author")));
+        invoke(service, "init");
+
+        // 启动失败，不应有服务在监听
+        @SuppressWarnings("unchecked")
+        Map<Integer, ?> servers = (Map<Integer, ?>) FieldUtils.readField(service, "servers", true);
+        assertTrue("认证器不存在时不应启动服务", servers.isEmpty());
     }
 
     /** 端口增删应正确反映到servers */
     @Test(timeout=60000)
     @SuppressWarnings("unchecked")
     public void reload() throws Exception {
+        invoke(registry, "init");
         int another = availablePort();
 
         config.setPws(Arrays.asList(new PwsConfig(port), new PwsConfig(another)));
@@ -240,27 +233,90 @@ public class PwsServiceTest extends BaseTest {
         assertTrue(CollectionUtils.isEqualCollection(Arrays.asList(another), servers.keySet()));
     }
 
-    /**
-     * 端口不变但认证配置变化时应重建服务，
-     * 否则改了认证配置却仍按旧配置放行。
-     */
+    /** 端口不变但认证配置变化时应重建，否则改了认证配置却仍按旧配置放行 */
     @Test(timeout=60000)
     public void reload_auth_changed() throws Exception {
-        config.setPws(Arrays.asList(pwsConfig(false)));
-        invoke(service, "init");
-        assertNull_authenticator();
+        localTokenAuthor("local");
+        invoke(registry, "init");
 
-        config.setPws(Arrays.asList(pwsConfig(true)));
+        config.setPws(Arrays.asList(pwsConfig(null)));
+        invoke(service, "init");
+        assertNull("未引用认证器时应为null", authorOf(port));
+
+        config.setPws(Arrays.asList(pwsConfig("local")));
         invoke(service, "reloadConfig");
-        assertNotNull_authenticator();
+        assertNotNull("引用认证器后应重建为带认证的服务", authorOf(port));
     }
 
     // ------------------------------------------------------------------
 
-    /** 起pws服务端 */
-    private void startPws(boolean auth) throws Exception {
-        config.setPws(Arrays.asList(pwsConfig(auth)));
+    /** 起pws服务端，authorId为null表示不认证 */
+    private void startPws(String authorId) throws Exception {
+        invoke(registry, "init");
+        config.setPws(Arrays.asList(pwsConfig(authorId)));
         invoke(service, "init");
+    }
+
+    /**
+     * 起带本地token认证的pws服务端
+     * @return 为用户zhangsan生成的token
+     */
+    private String startPwsWithLocalToken() throws Exception {
+        localTokenAuthor("local");
+        invoke(registry, "init");
+        String token = registry.get("local", LocalTokenAuthor.class).store()
+            .add("zhangsan", null, System.currentTimeMillis());
+        config.setPws(Arrays.asList(pwsConfig("local")));
+        invoke(service, "init");
+        return token;
+    }
+
+    /** 起带ldap认证的pws服务端 */
+    private void startPwsWithLdap() throws Exception {
+        ldap = new EmbeddedLdap(availablePort());
+        ldap.addUser(LdapUser, LdapPassword);
+
+        Map<String, String> args = new LinkedHashMap<>();
+        args.put("url", ldap.url());
+        args.put("baseDn", EmbeddedLdap.BaseDn);
+        args.put("bindDn", EmbeddedLdap.BindDn);
+        args.put("bindPassword", EmbeddedLdap.BindPassword);
+        args.put("userFilter", "(uid={0})");
+        author("ldap", "Ldap", args);
+
+        invoke(registry, "init");
+        config.setPws(Arrays.asList(pwsConfig("ldap")));
+        invoke(service, "init");
+    }
+
+    /** 声明一个本地token认证器 */
+    private void localTokenAuthor(String id) throws Exception {
+        File store = new File(tmp.getRoot(), id+"-users.json");
+        Map<String, String> args = new LinkedHashMap<>();
+        args.put(LocalTokenAuthor.Arg_UserStore, store.getAbsolutePath());
+        author(id, "LocalToken", args);
+    }
+
+    /** 向配置中追加一个认证器声明 */
+    private void author(String id, String type, Map<String, String> args) {
+        AuthorConfig c = new AuthorConfig();
+        c.setId(id);
+        c.setType(type);
+        c.setArgs(args);
+
+        AuthConfig auth = new AuthConfig();
+        auth.setAuthors(Arrays.asList(c));
+        config.setAuth(auth);
+    }
+
+    private PwsConfig pwsConfig(String authorId) {
+        PwsConfig c = new PwsConfig(port);
+        if(authorId!=null){
+            PwsAuthConfig auth = new PwsAuthConfig();
+            auth.setAuthorId(authorId);
+            c.setAuth(auth);
+        }
+        return c;
     }
 
     /**
@@ -268,14 +324,14 @@ public class PwsServiceTest extends BaseTest {
      * 复用{@link TcpService}的pws代理能力，凭据通过{@code pws://user:pass@host:port}携带，
      * 这样测试走的是真实客户端链路而非自己拼websocket握手。
      */
-    private void startTcpClient(String user, String password) throws Exception {
-        tcpPort = availablePort();
+    private void startTcpClient(String user, String credential) throws Exception {
+        int tcpPort = availablePort();
 
         Config.TcpConfig tcp = new Config.TcpConfig();
         tcp.setPort(tcpPort);
         tcp.setTarget("127.0.0.1:"+targetPort);
-        String credential = user==null? "": urlEncode(user)+":"+urlEncode(password)+"@";
-        tcp.setProxy("pws://"+credential+"127.0.0.1:"+port);
+        String userInfo = user==null? "": urlEncode(user)+":"+urlEncode(credential)+"@";
+        tcp.setProxy("pws://"+userInfo+"127.0.0.1:"+port);
         config.setTcp(Arrays.asList(tcp));
 
         tcpService = new TcpService();
@@ -305,7 +361,7 @@ public class PwsServiceTest extends BaseTest {
         assertBs(data, in);
     }
 
-    /** 断言认证未通过：pws服务端不应有连接，目标服务也不应被连上 */
+    /** 断言认证未通过：pws服务端不应有连接 */
     @SuppressWarnings("unchecked")
     private void assertNoConnection() throws Exception {
         out.write(rand());
@@ -318,45 +374,15 @@ public class PwsServiceTest extends BaseTest {
         assertEquals("认证未通过不应建立连接", 0, connections.size());
     }
 
-    private void assertNull_authenticator() throws Exception {
-        assertEquals(null, authenticatorOf(port));
-    }
-    private void assertNotNull_authenticator() throws Exception {
-        assertTrue("认证配置变更后应重建为带认证的服务", authenticatorOf(port)!=null);
-    }
     @SuppressWarnings("unchecked")
-    private Object authenticatorOf(int port) throws Exception {
+    private Object authorOf(int port) throws Exception {
         Map<Integer, ?> servers = (Map<Integer, ?>) FieldUtils.readField(service, "servers", true);
         Object serverMeta = servers.get(port);
-        return FieldUtils.readField(serverMeta, "authenticator", true);
-    }
-
-    private PwsAuthenticator authenticator() {
-        return new LdapPwsAuthenticator(ldapConfig());
-    }
-
-    private PwsConfig pwsConfig(boolean auth) {
-        PwsConfig c = new PwsConfig(port);
-        if(auth){
-            LdapAuthConfig authConfig = ldapConfig();
-            authConfig.setEnabled(true);
-            c.setAuth(authConfig);
-        }
-        return c;
-    }
-
-    private LdapAuthConfig ldapConfig() {
-        LdapAuthConfig c = new LdapAuthConfig();
-        c.setUrl(ldap.url());
-        c.setBaseDn(EmbeddedLdap.BaseDn);
-        c.setBindDn(EmbeddedLdap.BindDn);
-        c.setBindPassword(EmbeddedLdap.BindPassword);
-        c.setUserFilter("(uid={0})");
-        return c;
+        return FieldUtils.readField(serverMeta, "author", true);
     }
 
     /** userInfo中的特殊字符需转义，否则URI解析不出来 */
     private static String urlEncode(String s) throws Exception {
-        return java.net.URLEncoder.encode(s, "UTF-8");
+        return URLEncoder.encode(s, "UTF-8");
     }
 }

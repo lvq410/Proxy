@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>代理用户管理</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:24px;font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;color:#222;background:#f5f6f7}
+.wrap{max-width:960px;margin:0 auto}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:#888;font-size:13px;margin-bottom:20px}
+.card{background:#fff;border:1px solid #e3e5e8;border-radius:6px;padding:20px;margin-bottom:16px}
+label{display:block;margin-bottom:4px;color:#555;font-size:13px}
+input,select{width:100%;padding:8px 10px;border:1px solid #d0d3d6;border-radius:4px;font-size:14px;font-family:inherit}
+input:focus,select:focus{outline:none;border-color:#4a7dff}
+button{padding:8px 16px;border:0;border-radius:4px;background:#4a7dff;color:#fff;font-size:14px;cursor:pointer;font-family:inherit}
+button:hover{background:#3a6dee}
+button.sm{padding:4px 10px;font-size:13px}
+button.gray{background:#8b9196}
+button.gray:hover{background:#7b8186}
+button.red{background:#e05252}
+button.red:hover{background:#d04242}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:10px 8px;border-bottom:1px solid #eee}
+th{color:#666;font-weight:600;font-size:13px}
+.row{display:flex;gap:12px;align-items:flex-end}
+.row>div{flex:1}
+.row>button{flex:0 0 auto}
+.muted{color:#999}
+.off{color:#c00}
+.token{background:#fffbe6;border:1px solid #ffe07a;border-radius:4px;padding:12px;margin-top:12px;word-break:break-all}
+.token code{display:block;font-size:13px;background:#fff;padding:8px;border-radius:3px;margin-top:6px;border:1px solid #f0e0a0}
+.err{background:#fdeaea;border:1px solid #f5b5b5;color:#a33;border-radius:4px;padding:10px;margin-bottom:12px}
+.hide{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>代理用户管理</h1>
+  <div class="sub">凭据仅保存哈希，token 生成后无法再次查看，遗失只能重置。</div>
+
+  <div id="errBox" class="err hide"></div>
+
+  <!-- 登录 -->
+  <div class="card" id="loginCard">
+    <div class="row">
+      <div>
+        <label>认证器</label>
+        <select id="authorSel"></select>
+      </div>
+      <div>
+        <label>管理员 token</label>
+        <input type="password" id="adminToken" placeholder="首次启动时打印在日志中"/>
+      </div>
+      <button onclick="login()">进入</button>
+    </div>
+  </div>
+
+  <!-- 主体 -->
+  <div id="mainArea" class="hide">
+    <div class="card">
+      <div class="row">
+        <div>
+          <label>用户名</label>
+          <input id="newUser" placeholder="客户端配置中 pws://<用户名>:<token>@host"/>
+        </div>
+        <div>
+          <label>备注</label>
+          <input id="newRemark" placeholder="选填"/>
+        </div>
+        <button onclick="addUser()">新增用户</button>
+      </div>
+      <div id="tokenBox" class="token hide"></div>
+    </div>
+
+    <div class="card">
+      <table>
+        <thead><tr><th>用户名</th><th>备注</th><th>状态</th><th>创建时间</th><th style="width:210px">操作</th></tr></thead>
+        <tbody id="userList"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <button class="gray" onclick="resetAdmin()">重置管理员 token</button>
+      <span class="muted" style="margin-left:8px">重置后需用新 token 重新进入</span>
+    </div>
+  </div>
+</div>
+
+<script>
+var authorId = null, token = null;
+
+function auth(){ return 'Basic ' + btoa('admin:' + token); }
+
+function api(method, path, body){
+  var opt = {method:method, headers:{'Authorization':auth()}};
+  if(body){ opt.headers['Content-Type']='application/json'; opt.body=JSON.stringify(body); }
+  return fetch(path, opt).then(function(r){
+    return r.json().then(function(d){
+      if(!r.ok || d.ok===false) throw new Error(d.err || ('请求失败 '+r.status));
+      return d;
+    });
+  });
+}
+
+function showErr(msg){
+  var b=document.getElementById('errBox');
+  b.textContent=msg; b.classList.remove('hide');
+  setTimeout(function(){ b.classList.add('hide'); }, 5000);
+}
+
+function showToken(title, t){
+  var b=document.getElementById('tokenBox');
+  b.innerHTML='<b>'+title+'</b>（仅此一次可见，请立即保存）<code>'+t+'</code>';
+  b.classList.remove('hide');
+}
+
+// 加载认证器列表（此接口在未认证时也可列出，便于首次进入）
+fetch('/author/list').then(function(r){return r.json()}).then(function(d){
+  var sel=document.getElementById('authorSel');
+  (d.authors||[]).forEach(function(id){
+    var o=document.createElement('option'); o.value=id; o.textContent=id; sel.appendChild(o);
+  });
+  if(!(d.authors||[]).length) showErr('未配置任何本地token认证器');
+}).catch(function(e){ showErr('加载认证器失败：'+e.message); });
+
+function login(){
+  authorId = document.getElementById('authorSel').value;
+  token = document.getElementById('adminToken').value;
+  if(!authorId){ showErr('请选择认证器'); return; }
+  load().then(function(){
+    document.getElementById('loginCard').classList.add('hide');
+    document.getElementById('mainArea').classList.remove('hide');
+  }).catch(function(e){ showErr(e.message); });
+}
+
+function load(){
+  return api('GET', '/author/'+encodeURIComponent(authorId)+'/users').then(function(d){
+    var tb=document.getElementById('userList');
+    tb.innerHTML='';
+    if(!d.users.length){
+      tb.innerHTML='<tr><td colspan="5" class="muted">暂无用户</td></tr>';
+      return;
+    }
+    d.users.forEach(function(u){
+      var tr=document.createElement('tr');
+      var time = u.createdAt ? new Date(u.createdAt).toLocaleString('zh-CN') : '';
+      tr.innerHTML =
+        '<td>'+esc(u.username)+'</td>'+
+        '<td class="muted">'+esc(u.remark||'')+'</td>'+
+        '<td>'+(u.enabled?'<span>启用</span>':'<span class="off">停用</span>')+'</td>'+
+        '<td class="muted">'+time+'</td>'+
+        '<td>'+
+          '<button class="sm" onclick="resetUser(\'' + esc(u.username) + '\')">重置token</button> '+
+          '<button class="sm gray" onclick="toggle(\'' + esc(u.username) + '\','+(!u.enabled)+')">'+(u.enabled?'停用':'启用')+'</button> '+
+          '<button class="sm red" onclick="del(\'' + esc(u.username) + '\')">删除</button>'+
+        '</td>';
+      tb.appendChild(tr);
+    });
+  });
+}
+
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+
+function addUser(){
+  var u=document.getElementById('newUser').value.trim();
+  if(!u){ showErr('请填写用户名'); return; }
+  api('POST','/author/'+encodeURIComponent(authorId)+'/users',
+      {username:u, remark:document.getElementById('newRemark').value})
+    .then(function(d){
+      showToken('用户 '+u+' 的 token', d.token);
+      document.getElementById('newUser').value='';
+      document.getElementById('newRemark').value='';
+      return load();
+    }).catch(function(e){ showErr(e.message); });
+}
+
+function resetUser(u){
+  if(!confirm('重置 '+u+' 的 token？原 token 立即失效。')) return;
+  api('POST','/author/'+encodeURIComponent(authorId)+'/users/'+encodeURIComponent(u)+'/reset')
+    .then(function(d){ showToken('用户 '+u+' 的新 token', d.token); })
+    .catch(function(e){ showErr(e.message); });
+}
+
+function toggle(u, enabled){
+  api('POST','/author/'+encodeURIComponent(authorId)+'/users/'+encodeURIComponent(u)+'/enabled',
+      {enabled:enabled})
+    .then(load).catch(function(e){ showErr(e.message); });
+}
+
+function del(u){
+  if(!confirm('删除用户 '+u+'？该用户将立即无法连接。')) return;
+  api('DELETE','/author/'+encodeURIComponent(authorId)+'/users/'+encodeURIComponent(u))
+    .then(load).catch(function(e){ showErr(e.message); });
+}
+
+function resetAdmin(){
+  if(!confirm('重置管理员 token？重置后需用新 token 重新进入。')) return;
+  api('POST','/author/'+encodeURIComponent(authorId)+'/admin/reset')
+    .then(function(d){ showToken('新的管理员 token', d.token); })
+    .catch(function(e){ showErr(e.message); });
+}
+</script>
+</body>
+</html>
