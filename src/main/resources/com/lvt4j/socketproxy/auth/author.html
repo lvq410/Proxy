@@ -31,6 +31,8 @@ th{color:#666;font-weight:600;font-size:13px}
 .off{color:#c00}
 .token{background:#fffbe6;border:1px solid #ffe07a;border-radius:4px;padding:12px;margin-top:12px;word-break:break-all}
 .token code{display:block;font-size:13px;background:#fff;padding:8px;border-radius:3px;margin-top:6px;border:1px solid #f0e0a0}
+.tip{background:#eef4ff;border:1px solid #c5d8ff;border-radius:4px;padding:10px 12px;margin-bottom:16px;font-size:13px;color:#33507d}
+.warn-label{color:#c60;font-weight:600}
 .err{background:#fdeaea;border:1px solid #f5b5b5;color:#a33;border-radius:4px;padding:10px;margin-bottom:12px}
 .hide{display:none}
 </style>
@@ -60,14 +62,15 @@ th{color:#666;font-weight:600;font-size:13px}
   <!-- 主体 -->
   <div id="mainArea" class="hide">
     <div class="card">
+      <div class="tip">token 由系统随机生成，<b>不需要、也无法自行设置密码</b>。备注为明文保存并显示在下方列表中，<b>请勿填写密码</b>。</div>
       <div class="row">
         <div>
           <label>用户名</label>
-          <input id="newUser" placeholder="客户端配置中 pws://<用户名>:<token>@host"/>
+          <input id="newUser" placeholder="客户端配置中 pws://&lt;用户名&gt;:&lt;token&gt;@host 的用户名部分"/>
         </div>
         <div>
-          <label>备注</label>
-          <input id="newRemark" placeholder="选填"/>
+          <label>备注 <span class="warn-label">（不是密码）</span></label>
+          <input id="newRemark" placeholder="选填，如用途/机器名，切勿填写密码"/>
         </div>
         <button onclick="addUser()">新增用户</button>
       </div>
@@ -167,14 +170,35 @@ function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, function(c){
 function addUser(){
   var u=document.getElementById('newUser').value.trim();
   if(!u){ showErr('请填写用户名'); return; }
+  var remark=document.getElementById('newRemark').value;
+  // 备注是明文保存并展示的，这里再拦一道：形似密码时要求确认
+  if(looksLikeSecret(remark) &&
+     !confirm('备注会以明文保存并显示在用户列表中。\n\n你填写的内容看起来像密码，确定要保存吗？\n\n（token 由系统生成，无需在此填写任何密码）')){
+    return;
+  }
   api('POST','/author/'+encodeURIComponent(authorId)+'/users',
-      {username:u, remark:document.getElementById('newRemark').value})
+      {username:u, remark:remark})
     .then(function(d){
       showToken('用户 '+u+' 的 token', d.token);
       document.getElementById('newUser').value='';
       document.getElementById('newRemark').value='';
       return load();
     }).catch(function(e){ showErr(e.message); });
+}
+
+/** 粗略判断是否形似密码：含大小写/数字/符号混合且无空格的中短串 */
+function looksLikeSecret(s){
+  if(!s) return false;
+  s=s.trim();
+  if(!s || s.length<6 || s.length>64 || /\s/.test(s)) return false;
+  var kinds=0;
+  if(/[a-z]/.test(s)) kinds++;
+  if(/[A-Z]/.test(s)) kinds++;
+  if(/[0-9]/.test(s)) kinds++;
+  if(/[^A-Za-z0-9]/.test(s)) kinds++;
+  // 纯中文/纯字母的正常备注不会触发
+  if(/[一-龥]/.test(s)) return false;
+  return kinds>=3;
 }
 
 function resetUser(u){
