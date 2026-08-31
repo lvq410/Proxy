@@ -9,7 +9,10 @@ management:
     db.enabled: false
   info.git.mode: full
 
-server.port: ${management.server.port}
+# 主应用端口，管理界面在此端口下
+# 与 management.server.port 分开，使管理界面与actuator可分别控制是否对外暴露
+# 仅在 spring.main.web-application-type 为 servlet 时才会监听
+server.port: 8080
 
 spring:
   main:

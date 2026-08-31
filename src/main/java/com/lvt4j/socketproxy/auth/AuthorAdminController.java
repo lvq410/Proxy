@@ -1,5 +1,7 @@
 package com.lvt4j.socketproxy.auth;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -7,6 +9,7 @@ import java.util.Map;
 
 import javax.servlet.http.HttpServletRequest;
 
+import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -40,6 +43,20 @@ public class AuthorAdminController {
 
     @Autowired
     private AuthorRegistry registry;
+
+    /**
+     * 管理界面页面。
+     * <p>
+     * 页面放在classpath而非static目录下，由本controller显式提供，
+     * 使其只存在于主端口({@code server.port})，
+     * 而不会随静态资源一并出现在管理端口({@code management.server.port})上。
+     */
+    @GetMapping(value="/", produces="text/html;charset=UTF-8")
+    public String page() throws IOException {
+        try(InputStream in = getClass().getResourceAsStream("author.html")){
+            return IOUtils.toString(in, UTF_8);
+        }
+    }
 
     /**
      * 可管理的认证器id列表。<br>
